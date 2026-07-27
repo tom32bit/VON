@@ -446,9 +446,13 @@ pub fn get_api_key(provider: &str) -> Result<Option<String>> {
 pub fn providers_with_keys() -> Result<Vec<String>> {
     with_db(|c| {
         let mut stmt = c.prepare("SELECT provider FROM api_keys ORDER BY provider")?;
-        Ok(stmt
+        // Collect into a local before returning: `Ok(stmt.query_map(..)...)`
+        // keeps the borrow of `stmt` alive inside the returned expression,
+        // which outlives `stmt` itself.
+        let rows = stmt
             .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<String>>>()?)
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
     })
 }
 
@@ -504,7 +508,8 @@ pub fn list_local_models() -> Result<Vec<LocalModelRow>> {
                     file_path, downloaded
              FROM local_models ORDER BY size_bytes ASC",
         )?;
-        Ok(stmt
+        // Collect into a local first — see the note in providers_with_keys.
+        let rows = stmt
             .query_map([], |r| {
                 Ok(LocalModelRow {
                     id: r.get(0)?,
@@ -518,7 +523,8 @@ pub fn list_local_models() -> Result<Vec<LocalModelRow>> {
                     downloaded: r.get::<_, i32>(8)? != 0,
                 })
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     })
 }
 

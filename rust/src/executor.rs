@@ -13,7 +13,7 @@
 //! Both are gated by the governor: a thermally throttled device does not get to
 //! spin up a compile-and-run cycle.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 

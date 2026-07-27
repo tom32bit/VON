@@ -10,7 +10,10 @@ license = "MIT"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [features]
-default = ["local-llm", "wasm-exec", "python-exec"]
+default = ["ffi", "local-llm", "wasm-exec", "python-exec"]
+# The Dart bridge. Requires `frb_generated.rs`, so it is off for plain
+# `cargo test` runs that have not run codegen. See src/lib.rs.
+ffi = []
 # Local GGUF inference through llama.cpp. Requires the NDK when cross-compiling.
 local-llm = ["dep:llama-cpp-2"]
 # Wasmtime-backed execution of agent-authored .wasm modules.

@@ -1,6 +1,6 @@
 //! Driving the agent from Dart (PRD Process B).
 
-use flutter_rust_bridge::StreamSink;
+use crate::frb_generated::StreamSink;
 
 use crate::agent::{self, AgentEvent, RunOptions};
 use crate::api::types::{ApiResult, VonException};

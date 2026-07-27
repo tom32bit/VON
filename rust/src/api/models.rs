@@ -11,6 +11,7 @@ use crate::api::types::{
     VonException,
 };
 use crate::error::VonError;
+use crate::frb_generated::StreamSink;
 use crate::llm::{catalog, Provider};
 use crate::{db, governor, state};
 
@@ -97,7 +98,7 @@ pub fn list_cloud_models() -> ApiResult<Vec<CloudModelDto>> {
 /// Resumable: calling this again after an interrupted download continues from
 /// where it stopped rather than starting the multi-gigabyte transfer over.
 pub fn download_model(
-    sink: flutter_rust_bridge::StreamSink<DownloadProgressDto>,
+    sink: StreamSink<DownloadProgressDto>,
     model_id: String,
 ) -> ApiResult<()> {
     let result = state::block_on(async {

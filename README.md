@@ -149,7 +149,7 @@ export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
 # 3. Generate the FFI bindings — lib/src/rust/ is gitignored, so this is
 #    required before anything in lib/ will resolve
 flutter pub get
-flutter_rust_bridge_codegen generate
+mkdir -p lib/src/rust && flutter_rust_bridge_codegen generate
 
 # 4. Cross-compile the core into android/app/src/main/jniLibs/
 ./tool/build_rust.sh                 # all ABIs, release
@@ -180,10 +180,9 @@ do rather than offering a button that fails.
 
 ```bash
 cd rust
-# `mod frb_generated;` must resolve even though the tests don't use the FFI
-# layer. Skip this if you've already run the codegen.
-touch src/frb_generated.rs
-
+# `--no-default-features` drops the `ffi` feature, so the api/ module and its
+# generated `frb_generated.rs` are excluded. That is why these run without
+# codegen.
 cargo test --no-default-features --features wasm-exec,python-exec
 cargo test --no-default-features sandbox::   # the escape tests specifically
 

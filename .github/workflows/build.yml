@@ -33,11 +33,6 @@ jobs:
         with:
           workspaces: rust
 
-      # `mod frb_generated;` must resolve even though these jobs don't need the
-      # FFI layer. The apk job generates the real file.
-      - name: Stub the generated bridge
-        run: touch rust/src/frb_generated.rs
-
       - name: Test
         working-directory: rust
         run: |
@@ -57,8 +52,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: Stub the generated bridge
-        run: touch rust/src/frb_generated.rs
       - name: Path traversal, symlink escape, and quota tests
         working-directory: rust
         run: |
@@ -80,8 +73,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: Stub the generated bridge
-        run: touch rust/src/frb_generated.rs
       # Reported, not enforced. This codebase was authored on a machine with no
       # Rust toolchain, so the formatting is hand-approximated and rustfmt has
       # opinions about line wrapping that no human reproduces exactly. Cosmetic

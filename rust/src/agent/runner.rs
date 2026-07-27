@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{prompt, tools};
 use crate::db::{self, MessageRow};
-use crate::error::{ErrorInfo, Result, VonError};
+use crate::error::{ErrorInfo, Result};
 use crate::governor;
 use crate::llm::{
     self,

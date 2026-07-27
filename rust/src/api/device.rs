@@ -1,6 +1,8 @@
 //! Device Profiler (PRD Page 4) and the live stats feed.
 
-use flutter_rust_bridge::{frb, StreamSink};
+use flutter_rust_bridge::frb;
+
+use crate::frb_generated::StreamSink;
 
 use crate::api::types::{ApiResult, DeviceProfileDto, DeviceStatsDto, VonException};
 use crate::error::VonError;
