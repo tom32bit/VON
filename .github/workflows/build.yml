@@ -8,7 +8,10 @@ on:
 
 env:
   FLUTTER_VERSION: "3.24.5"
-  RUST_VERSION: "1.85.0"
+  # Tracking stable rather than a pin: transitive deps (icu_*, home) raise
+  # their MSRV routinely, and every bump would otherwise break the build
+  # with an error that has nothing to do with this code.
+  RUST_VERSION: "stable"
   NDK_VERSION: "27.0.12077973"
   FRB_VERSION: "2.7.1"
   CARGO_TERM_COLOR: always
