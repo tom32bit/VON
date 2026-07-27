@@ -145,11 +145,13 @@ class _ImportButtonState extends ConsumerState<_ImportButton> {
           continue;
         }
         try {
-          landed.add(await api.importFile(
-            projectId: widget.projectId,
-            fileName: file.name,
-            bytes: bytes,
-          ));
+          landed.add(
+            await api.importFile(
+              projectId: widget.projectId,
+              fileName: file.name,
+              bytes: bytes,
+            ),
+          );
         } catch (e) {
           failed.add('${file.name}: ${describeError(e)}');
         }
@@ -179,8 +181,10 @@ class _ImportButtonState extends ConsumerState<_ImportButton> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: VonColors.bgElevated,
-          content: Text('Import failed: ${describeError(e)}',
-              style: VonText.body),
+          content: Text(
+            'Import failed: ${describeError(e)}',
+            style: VonText.body,
+          ),
         ),
       );
     } finally {
