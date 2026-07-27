@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use once_cell::sync::{Lazy, OnceCell};
@@ -118,6 +118,38 @@ pub fn sandbox_for(project_id: &str) -> Result<Sandbox> {
 }
 
 // ---- cancellation -------------------------------------------------------
+
+/// How many agent runs are in flight, across all projects.
+///
+/// Android backgrounding releases the resident model and the preview servers,
+/// which is right when the app is idle and wrong when it is mid-run: dropping a
+/// 1.7GB mmap only to fault it straight back in is slow, spikes memory, and
+/// makes the process a *better* target for the low-memory killer, not a worse
+/// one.
+static ACTIVE_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Marks a run as in flight until the returned guard is dropped.
+///
+/// A guard rather than a pair of calls because the loop has several early
+/// returns — a refusal, a transient error, a cancellation — and any one of them
+/// forgetting to decrement would leave the app permanently unable to shed
+/// memory on pause.
+pub struct RunGuard(());
+
+pub fn hold_active_run() -> RunGuard {
+    ACTIVE_RUNS.fetch_add(1, Ordering::SeqCst);
+    RunGuard(())
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        ACTIVE_RUNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub fn runs_in_flight() -> bool {
+    ACTIVE_RUNS.load(Ordering::SeqCst) > 0
+}
 
 pub fn cancel_flag(project_id: &str) -> Arc<AtomicBool> {
     let mut map = CANCEL.write();

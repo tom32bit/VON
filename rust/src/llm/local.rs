@@ -166,10 +166,12 @@ impl Engine for LocalEngine {
 /// support it, but it behaves identically everywhere, which matters more here.
 #[cfg(any(feature = "local-llm", test))]
 fn build_turns(request: &GenerateRequest) -> Vec<(String, String)> {
-    let mut system = request.system.clone();
-    if !request.tools.is_empty() {
-        system.push_str(&tool_protocol(&request.tools));
-    }
+    let system = request.system.clone();
+    let protocol = if request.tools.is_empty() {
+        String::new()
+    } else {
+        tool_protocol(&request.tools)
+    };
 
     let mut turns: Vec<(String, String)> = Vec::new();
     for message in &request.messages {
@@ -212,6 +214,24 @@ fn build_turns(request: &GenerateRequest) -> Vec<(String, String)> {
     while turns.first().map(|(r, _)| r != "user").unwrap_or(false) {
         turns.remove(0);
     }
+
+    // The tool protocol goes last — immediately before the model generates —
+    // rather than up with the system prompt.
+    //
+    // A small model's attention to an instruction decays with distance from
+    // the generation point. Buried above a long request, "you can call these
+    // tools" gets ignored and the model answers as the chatbot it was aligned
+    // to be: gemma-2-2b replied "I can't actually *create* a fully functional
+    // website, I'm a text-based AI" to a request whose entire premise was that
+    // it could. Moving the protocol to the end is the cheapest fix that does
+    // not involve a bigger model.
+    if !protocol.is_empty() {
+        let last_is_user = matches!(turns.last(), Some((role, _)) if role == "user");
+        match turns.last_mut() {
+            Some((_, text)) if last_is_user => text.push_str(&protocol),
+            _ => turns.push(("user".into(), protocol)),
+        }
+    }
     turns
 }
 
@@ -233,11 +253,23 @@ fn build_prompt_chatml(request: &GenerateRequest) -> String {
 
 #[cfg(any(feature = "local-llm", test))]
 fn tool_protocol(tools: &[ToolSpec]) -> String {
+    // Written to argue with the alignment, not just to describe the syntax.
+    // Small instruct models have a strong "I am a text-based AI, I cannot
+    // create files" prior, and stating the tools neutrally is not enough to
+    // override it — the refusal has to be named and contradicted.
     let mut out = String::from(
-        "\n\n# Tools\n\nYou can call the tools below. To call one, emit exactly:\n\
+        "\n\n# You are an agent, not a chatbot\n\n\
+         You are running inside a sandbox with real file storage and a real code \
+         runner. The tools below create actual files that the user can see, open \
+         and run. You are not limited to text.\n\n\
+         Never say you cannot build something. Never paste code and ask the user \
+         to save it themselves — write it with `write_file`. Never describe a \
+         file you are about to create; create it.\n\n\
+         To use a tool, emit exactly:\n\
          <tool_call>{\"name\": \"tool_name\", \"arguments\": {…}}</tool_call>\n\
          Emit nothing else on that line. You may call several in one turn, each \
-         in its own block. After calling, stop and wait for the results.\n\n",
+         in its own block. After calling, stop and wait for the results.\n\n\
+         # Tools\n\n",
     );
     for tool in tools {
         out.push_str(&format!(

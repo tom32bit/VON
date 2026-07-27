@@ -81,6 +81,13 @@ pub fn build_features() -> Vec<String> {
 /// Releases the two things that make the process an attractive target for the
 /// low-memory killer: the resident model weights and any preview servers.
 pub fn on_app_paused() -> Result<(), VonException> {
+    // Not while the agent is working. Dropping a 1.7GB mmap only to fault it
+    // straight back in is slow, spikes memory at exactly the wrong moment, and
+    // makes the process a better low-memory-killer target rather than a worse
+    // one — which is how switching apps mid-run ended up losing the run.
+    if state::runs_in_flight() {
+        return Ok(());
+    }
     llm::local::release_model();
     server::stop_all();
     Ok(())

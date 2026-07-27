@@ -25,12 +25,36 @@ class WorkspaceScreen extends ConsumerStatefulWidget {
   ConsumerState<WorkspaceScreen> createState() => _WorkspaceScreenState();
 }
 
-class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen> {
+class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen>
+    with WidgetsBindingObserver {
   int _tab = 0;
   bool _exporting = false;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    if (lifecycle != AppLifecycleState.resumed) return;
+    // Coming back from the background, re-read the transcript from SQLite.
+    // The foreground service should have kept the process alive, but Android
+    // is allowed to kill it anyway — and a run that finished while we were
+    // away has its result on disk and nowhere on screen. Skipped while a run
+    // is live, because the stream is still the better source.
+    final chat = ref.read(chatProvider(widget.projectId));
+    if (chat.running) return;
+    ref.read(chatProvider(widget.projectId).notifier).load().ignore();
+    ref
+      ..invalidate(fileTreeProvider(widget.projectId))
+      ..invalidate(sandboxUsageProvider(widget.projectId));
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // Free the port as soon as the workspace closes (SWE §3.2). Reads the
     // singleton directly rather than through `ref` — the container may already
     // be tearing down by the time dispose runs.

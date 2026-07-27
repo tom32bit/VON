@@ -315,6 +315,9 @@ first.
   dependency set.
 - **No OCR.** A scanned PDF has no text layer, and VON says so rather than
   returning an empty document.
+- **A run still dies if Android kills the process outright.** The foreground
+  service makes that far less likely, not impossible; work is persisted per
+  step, so what finished survives, but the step in flight does not.
 - **A truncated tree listing refuses rather than guesses.** GitHub truncates the
   recursive listing for very large repositories, and a truncated answer reads as
   "those files do not exist" — which the merge would act on as deletions.
@@ -338,7 +341,8 @@ von/
 │   ├── models/       chat state machine
 │   ├── services/     core_api — the single import seam
 │   └── ui/           widgets/, screens/, tabs/, sheets/
-├── android/          manifest, gradle, network + backup rules (no JVM source)
+├── android/          manifest, gradle, rules, and two Java files: one
+│                  activity and the foreground service that keeps a run alive
 ├── tool/             build_rust.sh
 └── test/             widget and markdown tests
 ```

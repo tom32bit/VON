@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/errors.dart';
 import '../core/providers.dart';
+import '../services/agent_service_channel.dart';
 import '../services/core_api.dart';
 
 enum ChatRole { user, assistant, system }
@@ -163,6 +164,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// because the turn's text also holds unreconciled streamed deltas.
   String _persisted = '';
 
+  /// Whether this notifier is holding the foreground service up.
+  ///
+  /// Tracked per-notifier rather than trusting call order: the channel counts
+  /// holders so two projects can run at once, and a stray extra release would
+  /// drop the service out from under the other one.
+  bool _holdsService = false;
+
   CoreApi get _api => _ref.read(coreApiProvider);
 
   /// Restores the conversation from SQLite (Process C: Resumption).
@@ -305,6 +313,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     );
 
     _persisted = '';
+    _acquireService();
     _subscription = _api
         .runAgent(projectId: projectId, message: text)
         .listen(_onEvent, onError: _onStreamError, onDone: _finish);
@@ -424,6 +433,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   void _finish() {
+    _releaseService();
     final turns = [...state.turns];
     final at = turns.lastIndexWhere((t) => t.streaming);
     if (at >= 0) {
@@ -457,7 +467,27 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   @override
   void dispose() {
+    // Leaving the workspace mid-run does not stop the run, but this notifier
+    // will never see its `done`, so the hold has to be given up here or the
+    // service outlives the work.
+    _releaseService();
     _subscription?.cancel();
     super.dispose();
+  }
+
+  /// Raises the process priority for as long as the run lasts, so switching
+  /// apps does not hand VON to the low-memory killer mid-build.
+  void _acquireService() {
+    if (_holdsService) return;
+    _holdsService = true;
+    AgentServiceChannel.instance
+        .acquire(projectLabel: 'Building your project. Tap to come back.')
+        .ignore();
+  }
+
+  void _releaseService() {
+    if (!_holdsService) return;
+    _holdsService = false;
+    AgentServiceChannel.instance.release().ignore();
   }
 }

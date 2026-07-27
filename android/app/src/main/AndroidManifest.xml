@@ -9,11 +9,26 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
+      A run happens on Rust threads inside this process, which Android knows
+      nothing about. Backgrounded, the process becomes a cached one, and a
+      cached process holding a 1.7GB mmapped model is the first thing the
+      low-memory killer takes — the run simply vanished. A foreground service
+      is the only supported way to say "work is still happening"; it is started
+      when a run begins and stopped the moment it ends.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- API 33+ will not show the service's notification without this. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
       Deliberately NOT requested:
         READ/WRITE_EXTERNAL_STORAGE - every project sandbox lives in app-private
-          storage; the export flow hands a file to the share sheet instead.
+          storage; imports come through the system picker, which grants one file
+          at a time, and the export flow hands a file to the share sheet.
         WAKE_LOCK - a long agent run should not be able to hold the device awake.
-        FOREGROUND_SERVICE - runs are user-initiated and bounded (MAX_STEPS).
+          The foreground service keeps the process alive without keeping the
+          screen on, which is the behaviour we actually want.
     -->
 
     <!-- Local models need real RAM; the profiler is honest about this. -->
@@ -33,13 +48,14 @@
         android:networkSecurityConfig="@xml/network_security_config">
 
         <!--
-          FlutterActivity is referenced directly rather than subclassed, so the
-          project contains no Java or Kotlin source at all (PRD §2). The Rust
-          core is loaded by flutter_rust_bridge from jniLibs; nothing here needs
-          a JVM-side entry point.
+          FlutterActivity was referenced directly for a long time, so the project
+          carried no JVM source at all. Keeping a backgrounded run alive needs a
+          foreground service, starting one needs a context and a method channel,
+          and both need somewhere to live — so there is now exactly one activity
+          and one service, and nothing else.
         -->
         <activity
-            android:name="io.flutter.embedding.android.FlutterActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""
@@ -61,6 +77,16 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+          dataSync rather than a more specific type: the run is doing local
+          computation and talking to a model provider, which is the closest
+          thing the taxonomy offers. Not exported — only this app starts it.
+        -->
+        <service
+            android:name=".AgentService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Required by share_plus to hand the exported .zip to another app. -->
         <provider

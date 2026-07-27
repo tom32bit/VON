@@ -164,6 +164,10 @@ fn run_inner(options: &RunOptions, emit: &mut dyn FnMut(AgentEvent)) -> Result<(
     let memory = db::load_memory(project_id)?;
 
     let mut totals = llm::Usage::default();
+    // Held for the whole run so backgrounding does not shed the model out
+    // from under it. Dropped on every exit path, including the early ones.
+    let _run = state::hold_active_run();
+
     let mut steps: u32 = 0;
     let mut retries = 0usize;
     let mut nudges = 0u32;
