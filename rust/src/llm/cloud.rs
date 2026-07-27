@@ -133,6 +133,18 @@ impl CloudEngine {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
+            // A 404 from a chat endpoint is never a missing URL — the URL is a
+            // constant. It means the model is not reachable on this account,
+            // which NVIDIA reports as an internal function id the user has no
+            // way to interpret. Say what it actually means and what to do.
+            if status.as_u16() == 404 {
+                return Err(VonError::NotFound(format!(
+                    "'{}' is listed by {} but is not available on your account. Pick another \
+                     model — providers list far more than any one key can run.",
+                    request.model,
+                    self.provider.display_name()
+                )));
+            }
             return Err(VonError::Provider {
                 provider: self.provider.as_str().to_string(),
                 status: status.as_u16(),
@@ -271,11 +283,18 @@ impl Accumulator {
                     c.id
                 },
                 name: c.name,
-                // An empty or truncated fragment means the stream was cut; an
-                // empty object lets the tool report a clear validation error
-                // rather than the loop dying on a parse failure.
-                arguments: serde_json::from_str(c.args_json.trim())
-                    .unwrap_or_else(|_| json!({})),
+                // Always an object, never merely "valid JSON".
+                //
+                // An empty or truncated fragment means the stream was cut, and
+                // an empty object lets the tool report a clear validation error
+                // rather than the loop dying on a parse failure. But a model
+                // that streams the literal `null` parses *successfully* into
+                // Value::Null, which is not an object — and that gets replayed
+                // on the next turn as `"arguments": "null"`, which NVIDIA
+                // rejects with a 400 that names a message seven turns back.
+                arguments: object_or_empty(
+                    &serde_json::from_str(c.args_json.trim()).unwrap_or(Value::Null),
+                ),
             })
             .collect::<Vec<_>>();
 
@@ -575,7 +594,7 @@ fn anthropic_body(request: &GenerateRequest) -> Value {
                         "type": "tool_use",
                         "id": call.id,
                         "name": call.name,
-                        "input": call.arguments,
+                        "input": object_or_empty(&call.arguments),
                     }));
                 }
                 if content.is_empty() {
@@ -634,6 +653,22 @@ fn anthropic_body(request: &GenerateRequest) -> Value {
     body
 }
 
+/// Coerces a tool call's arguments to a JSON object.
+///
+/// Every provider validates this field on the way back in and none of them
+/// accept `null`, a bare string, or a number — the argument list of a call that
+/// took no arguments is `{}`, not "nothing". Applied on the way out rather than
+/// only on the way in, because transcripts written by earlier builds are
+/// reloaded from SQLite on every single turn and one bad row would poison the
+/// project permanently.
+fn object_or_empty(value: &Value) -> Value {
+    if value.is_object() {
+        value.clone()
+    } else {
+        json!({})
+    }
+}
+
 fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
     let mut messages = Vec::new();
     if !request.system.is_empty() {
@@ -659,7 +694,7 @@ fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
                             "type": "function",
                             "function": {
                                 "name": c.name,
-                                "arguments": c.arguments.to_string(),
+                                "arguments": object_or_empty(&c.arguments).to_string(),
                             },
                         }))
                         .collect::<Vec<_>>());
@@ -736,7 +771,10 @@ fn gemini_body(request: &GenerateRequest) -> Value {
                 }
                 for call in &message.tool_calls {
                     parts.push(json!({
-                        "functionCall": { "name": call.name, "args": call.arguments },
+                        "functionCall": {
+                            "name": call.name,
+                            "args": object_or_empty(&call.arguments),
+                        },
                     }));
                 }
                 if parts.is_empty() {
@@ -939,6 +977,38 @@ mod tests {
         assert_eq!(nvidia["max_tokens"], json!(512));
         assert!(nvidia.get("max_completion_tokens").is_none());
         assert!(nvidia.get("stream_options").is_none(), "NIM did not");
+    }
+
+    /// The exact 400 NVIDIA returns: `messages[7].tool_calls[0].function.
+    /// arguments must be a valid JSON object string`. A model streamed the
+    /// literal `null`, which parses fine and is not an object, and it was
+    /// replayed on every later turn — so the run could not recover by itself.
+    #[test]
+    fn a_null_argument_list_never_reaches_a_provider() {
+        assert_eq!(object_or_empty(&Value::Null), json!({}));
+        assert_eq!(object_or_empty(&json!("a string")), json!({}));
+        assert_eq!(object_or_empty(&json!(42)), json!({}));
+        assert_eq!(object_or_empty(&json!([1, 2])), json!({}));
+        // A real argument list is passed through untouched.
+        assert_eq!(object_or_empty(&json!({"path": "a.py"})), json!({"path": "a.py"}));
+    }
+
+    #[test]
+    fn a_streamed_null_becomes_an_empty_object() {
+        let mut acc = Accumulator::default();
+        acc.push_openai(
+            &json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"call_1","function":{"name":"list_files","arguments":"null"}}
+            ]}}]}),
+            &mut |_| {},
+        );
+        let done = acc.finish();
+        assert_eq!(done.tool_calls.len(), 1);
+        assert!(
+            done.tool_calls[0].arguments.is_object(),
+            "got {:?}",
+            done.tool_calls[0].arguments
+        );
     }
 
     #[test]

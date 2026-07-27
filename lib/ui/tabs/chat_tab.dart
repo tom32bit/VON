@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -365,6 +367,66 @@ class _ThrottleNotice extends StatelessWidget {
   }
 }
 
+/// Counts up for as long as a run lasts.
+///
+/// A large reasoning model can sit in "planning" for minutes before it emits a
+/// single visible token — there is nothing to stream yet, so the phase line
+/// simply stops changing and the app reads as hung. A clock is the cheapest
+/// honest signal: it does not claim progress it cannot see, it just shows that
+/// time is passing and the app is still there.
+class _Elapsed extends StatefulWidget {
+  const _Elapsed();
+
+  @override
+  State<_Elapsed> createState() => _ElapsedState();
+}
+
+class _ElapsedState extends State<_Elapsed> {
+  final _started = DateTime.now();
+  Timer? _tick;
+  Duration _elapsed = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    // The widget only exists while `running` is true, so its own lifetime is
+    // the run's — no need to watch the flag.
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _elapsed = DateTime.now().difference(_started));
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Nothing for the first few seconds: a timer appearing instantly on every
+    // quick reply would be noise.
+    if (_elapsed.inSeconds < 3) return const SizedBox.shrink();
+
+    final minutes = _elapsed.inMinutes;
+    final seconds = _elapsed.inSeconds % 60;
+    final label = minutes > 0
+        ? '$minutes:${seconds.toString().padLeft(2, '0')}'
+        : '${seconds}s';
+
+    return Padding(
+      padding: const EdgeInsets.only(left: VonSpace.sm),
+      child: Text(
+        label,
+        style: VonText.mono.copyWith(
+          fontSize: 10,
+          color: VonColors.textDisabled,
+        ),
+      ),
+    );
+  }
+}
+
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
@@ -413,7 +475,9 @@ class _Composer extends StatelessWidget {
                         style: VonText.caption,
                       ),
                     ),
-                  ],
+                  ] else
+                    const Spacer(),
+                  const _Elapsed(),
                 ],
               ),
             ),
