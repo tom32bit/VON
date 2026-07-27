@@ -42,7 +42,20 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
         // No global request timeout: streaming completions legitimately stay
         // open for minutes. Per-request timeouts are applied where they apply.
         .connect_timeout(std::time::Duration::from_secs(20))
-        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        // 15s, not hyper's default 90.
+        //
+        // A pooled connection the server has already closed is handed out and
+        // the request dies at the transport layer — "error sending request for
+        // url", with no status, on a key that was working a minute ago. Most
+        // gateways drop idle connections well before 90s (nginx 75, several
+        // clouds 60, some inference proxies far less), so the default leaves a
+        // wide window in which every reused connection is a coin flip. Within
+        // one agent run the requests are seconds apart, so pooling still does
+        // its job; it is the gap between runs that was poisoning the pool.
+        .pool_idle_timeout(std::time::Duration::from_secs(15))
+        // Notices a connection the network dropped without telling us, which on
+        // a phone moving between wifi and cellular is not rare.
+        .tcp_keepalive(std::time::Duration::from_secs(20))
         .build()
         .expect("failed to build HTTP client")
 });

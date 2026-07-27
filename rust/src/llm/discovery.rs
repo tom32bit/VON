@@ -205,9 +205,20 @@ fn fetch(provider: Provider, key: &str) -> Result<Value> {
         for (name, value) in headers {
             request = request.header(name, value);
         }
-        let response = request
+        // Retried once, because this is a GET with no side effects and the
+        // failure it guards against is a pooled connection the server closed
+        // while we were not looking. Tightening the pool timeout makes that
+        // rarer; it does not make it impossible, and a key that reports itself
+        // broken because of one dead socket is a bad way to find out.
+        let mut attempt = request
+            .try_clone()
+            .ok_or_else(|| VonError::Other("could not prepare the request".into()))?
             .send()
-            .await
+            .await;
+        if attempt.is_err() {
+            attempt = request.send().await;
+        }
+        let response = attempt
             .map_err(|e| VonError::Network(format!("could not reach {label}: {e}")))?;
 
         let status = response.status();
