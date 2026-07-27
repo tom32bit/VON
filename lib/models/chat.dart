@@ -231,6 +231,25 @@ class ChatNotifier extends StateNotifier<ChatState> {
       }
     }
 
+    // Anything still unresolved after the merge never got a result written,
+    // which for a persisted transcript means the run did not survive it.
+    for (var i = 0; i < turns.length; i++) {
+      final turn = turns[i];
+      if (!turn.steps.any((s) => s.ok == null)) continue;
+      turns[i] = turn.copyWith(
+        steps: [
+          for (final step in turn.steps)
+            step.ok == null
+                ? step.copyWith(
+                    ok: false,
+                    output: 'This never reported a result — VON stopped while '
+                        'it was running.',
+                  )
+                : step,
+        ],
+      );
+    }
+
     return turns.where((t) => !t.isEmpty).toList();
   }
 
@@ -247,8 +266,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
               item['name'] as String? ?? '',
               item['arguments'],
             ),
-            // Restored from history: whatever happened has already happened.
-            ok: true,
+            // Left unknown on purpose. The result lives in the *next* row,
+            // and is merged on below; assuming success here meant a tool call
+            // that never returned — because the app died running it — was
+            // redrawn with a green tick on restart. That turned a reproducible
+            // crash into what looked like a working run, and cost real time.
           ),
       ];
     } catch (_) {

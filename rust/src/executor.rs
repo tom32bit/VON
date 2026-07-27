@@ -193,6 +193,41 @@ fn timeout_ceiling() -> u64 {
     MAX_TIMEOUT_MS
 }
 
+/// Settings key holding the stage a Python run reached.
+///
+/// The app dies natively when running code on a real device, and a native death
+/// takes the log buffer with it — there is nothing left to read afterwards, and
+/// no way to attach a debugger to a phone that is not plugged in. So the run
+/// writes down where it got to, immediately and durably, and the next run reads
+/// it back. Whatever the last stage was is where it died.
+///
+/// SQLite in WAL mode commits each of these before returning, which is the
+/// whole reason for using it rather than a log line.
+const STAGE_KEY: &str = "last_python_stage";
+
+fn mark_stage(stage: &str) {
+    let _ = crate::db::set_setting(STAGE_KEY, stage);
+}
+
+fn clear_stage() {
+    let _ = crate::db::clear_setting(STAGE_KEY);
+}
+
+/// The stage a previous run never got past, if it did not finish.
+///
+/// Read once and cleared, so it is reported to the agent exactly once — as part
+/// of the next run's observation, which is the only channel that reliably
+/// reaches the user after the app has restarted.
+fn take_unfinished_stage() -> Option<String> {
+    let stage = crate::db::get_setting(STAGE_KEY).ok().flatten()?;
+    clear_stage();
+    if stage.trim().is_empty() {
+        None
+    } else {
+        Some(stage)
+    }
+}
+
 /// Refuses a Python run while an earlier one is still going.
 ///
 /// Only Python. A WASM module that overruns is genuinely stopped — Wasmtime's
@@ -466,13 +501,37 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
         // this stack rather than the caller's.
         std::thread::Builder::new()
             .name("von-python".into())
-            .stack_size(8 * 1024 * 1024)
+            // 32MB, not 8. RustPython's compiler and evaluator both recurse
+            // with the shape of the program, and a stack overflow is a native
+            // death with no error to report — exactly the failure being chased
+            // here. Virtual, not committed: the pages cost nothing until used.
+            .stack_size(32 * 1024 * 1024)
             .spawn(move || {
                 // Dropped when this thread ends, which for an overrun is long
                 // after the caller stopped waiting — that is exactly the window
                 // a second execution must not start in.
                 let _slot = InterpreterSlot::take();
-                let result = execute(&program, &root);
+
+                // A panic inside the interpreter would otherwise unwind through
+                // frames that were never meant to unwind, and a second panic
+                // during that unwinding aborts the process. Catching it turns
+                // "the app vanished" into a message the agent can report.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute(&program, &root)
+                }))
+                .unwrap_or_else(|payload| {
+                    let detail = payload
+                        .downcast_ref::<&str>()
+                        .map(|s| (*s).to_string())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "no message".into());
+                    (
+                        String::new(),
+                        format!("InternalError: the Python interpreter panicked ({detail})"),
+                        70,
+                    )
+                });
+
                 // Receiver may already be gone after a timeout; that is fine.
                 let _ = tx.send(result);
             })
@@ -541,6 +600,9 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
     fn execute(program: &str, root: &std::path::Path) -> (String, String, i32) {
         use rustpython_vm as vm;
 
+        // Each stage is written before it is attempted, so the last one
+        // recorded is the one that did not survive.
+        mark_stage("vm_init");
         let interpreter = vm::Interpreter::with_init(Default::default(), |vm| {
             // Native modules (math, time, _sre …) and the frozen pure-Python
             // half (io, json, encodings …). Both are needed: with only the
@@ -550,6 +612,7 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
             vm.add_frozen(rustpython_pylib::FROZEN_STDLIB);
         });
 
+        mark_stage("vm_enter");
         interpreter.enter(|vm| {
             let scope = vm.new_scope_with_builtins();
 
@@ -563,6 +626,7 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
                 );
             }
 
+            mark_stage("compile");
             let compiled = match vm.compile(
                 program,
                 vm::compiler::Mode::Exec,
@@ -574,6 +638,7 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
                 }
             };
 
+            mark_stage("run");
             match vm.run_code_obj(compiled, scope.clone()) {
                 Ok(_) => {
                     let out = fetch_str(vm, &scope, "__af_out");
@@ -667,8 +732,26 @@ pub fn run_python(
     if code.trim().is_empty() {
         return Err(VonError::InvalidArgument("no code to run".into()));
     }
+
+    // Read before this run overwrites it.
+    let crashed_at = take_unfinished_stage();
+
     let _guard = governor::begin_inference();
-    python_backend::run(sandbox, code, effective_timeout(timeout_ms), on_progress)
+    let mut outcome =
+        python_backend::run(sandbox, code, effective_timeout(timeout_ms), on_progress)?;
+    clear_stage();
+
+    // Surfaced through the observation because that is the only channel that
+    // still works after the process has died and been restarted: it reaches the
+    // agent, which reports it, and it lands in the chat where it can be read.
+    if let Some(stage) = crashed_at {
+        outcome.stderr = format!(
+            "NOTE: the previous run of this VON never finished — the app stopped at stage \
+             '{stage}'. Tell the user, and mention the stage.\n{}",
+            outcome.stderr
+        );
+    }
+    Ok(outcome)
 }
 
 /// Runs a Python file already written into the sandbox.
