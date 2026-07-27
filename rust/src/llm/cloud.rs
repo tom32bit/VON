@@ -114,7 +114,7 @@ impl CloudEngine {
                     _ => OPENAI_URL,
                 }
                 .to_string(),
-                openai_body(request),
+                openai_body(request, openai_like),
                 vec![(
                     "authorization".to_string(),
                     format!("Bearer {}", self.api_key),
@@ -634,7 +634,7 @@ fn anthropic_body(request: &GenerateRequest) -> Value {
     body
 }
 
-fn openai_body(request: &GenerateRequest) -> Value {
+fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
     let mut messages = Vec::new();
     if !request.system.is_empty() {
         messages.push(json!({ "role": "system", "content": request.system }));
@@ -681,11 +681,28 @@ fn openai_body(request: &GenerateRequest) -> Value {
 
     let mut body = json!({
         "model": request.model,
-        "max_completion_tokens": request.max_tokens,
         "stream": true,
-        "stream_options": { "include_usage": true },
         "messages": messages,
     });
+
+    // `max_completion_tokens` is OpenAI's newer spelling and the only one its
+    // reasoning models accept. The clones are not OpenAI: NVIDIA NIM and Groq
+    // both document `max_tokens`, and a strict server rejects a field it does
+    // not recognise rather than ignoring it. Same reasoning for
+    // `stream_options`, which is an OpenAI extension Groq adopted and NIM did
+    // not — without it the usage numbers are simply absent, which is a much
+    // smaller loss than a 400.
+    match provider {
+        Provider::OpenAi => {
+            body["max_completion_tokens"] = json!(request.max_tokens);
+            body["stream_options"] = json!({ "include_usage": true });
+        }
+        Provider::Groq => {
+            body["max_tokens"] = json!(request.max_tokens);
+            body["stream_options"] = json!({ "include_usage": true });
+        }
+        _ => body["max_tokens"] = json!(request.max_tokens),
+    }
     if !request.tools.is_empty() {
         body["tools"] = json!(request
             .tools
@@ -893,12 +910,35 @@ mod tests {
             },
         ])]);
         req.provider = Provider::OpenAi;
-        let body = openai_body(&req);
+        let body = openai_body(&req, Provider::OpenAi);
         let turns = body["messages"].as_array().unwrap();
         // system + two tool messages
         assert_eq!(turns.len(), 3);
         assert_eq!(turns[1]["tool_call_id"], json!("a"));
         assert_eq!(turns[2]["tool_call_id"], json!("b"));
+    }
+
+    /// NVIDIA NIM rejects fields it does not recognise rather than ignoring
+    /// them, so the OpenAI-only spellings must not leak into its request.
+    #[test]
+    fn the_openai_clones_get_the_field_names_they_document() {
+        let mut req = request(vec![ChatMessage::user("hi")]);
+        req.max_tokens = 512;
+
+        let openai = openai_body(&req, Provider::OpenAi);
+        assert_eq!(openai["max_completion_tokens"], json!(512));
+        assert!(openai.get("max_tokens").is_none());
+        assert!(openai.get("stream_options").is_some());
+
+        let groq = openai_body(&req, Provider::Groq);
+        assert_eq!(groq["max_tokens"], json!(512));
+        assert!(groq.get("max_completion_tokens").is_none());
+        assert!(groq.get("stream_options").is_some(), "Groq adopted it");
+
+        let nvidia = openai_body(&req, Provider::Nvidia);
+        assert_eq!(nvidia["max_tokens"], json!(512));
+        assert!(nvidia.get("max_completion_tokens").is_none());
+        assert!(nvidia.get("stream_options").is_none(), "NIM did not");
     }
 
     #[test]

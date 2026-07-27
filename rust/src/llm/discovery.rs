@@ -66,6 +66,29 @@ fn is_chat_model(id: &str) -> bool {
     !NOT_CHAT.iter().any(|bad| lower.contains(bad))
 }
 
+/// Checks a key by listing models with it.
+///
+/// Cheaper and far faster than the old approach of sending a real chat
+/// completion: no tokens are spent, no model has to be picked, and a bad key
+/// comes back as a 401 in one round trip instead of a streaming request that
+/// sits open. NVIDIA NIM in particular left the button saying "Testing
+/// connection" for as long as the connection took to fail.
+pub fn test_key(provider: Provider, key: &str) -> Result<()> {
+    let body = fetch(provider, key)?;
+    let count = match provider {
+        Provider::Gemini => read_gemini(&body).len(),
+        Provider::Anthropic => read_anthropic(&body).len(),
+        _ => read_openai(&body).len(),
+    };
+    if count == 0 {
+        return Err(VonError::Other(format!(
+            "{} accepted the key but offered no chat models on it",
+            provider.display_name()
+        )));
+    }
+    Ok(())
+}
+
 /// Lists the models this provider's stored key can reach.
 ///
 /// Falls back to the curated entries when there is no key, so the picker is
@@ -172,7 +195,13 @@ fn fetch(provider: Provider, key: &str) -> Result<Value> {
 
     let label = provider.display_name();
     state::block_on(async move {
-        let mut request = state::http().get(url);
+        // Unlike a completion, a model listing is a small GET with a bounded
+        // answer, so it gets a bounded wait. The shared client has no global
+        // timeout because streaming completions legitimately stay open for
+        // minutes — which is why this one has to be set here.
+        let mut request = state::http()
+            .get(url)
+            .timeout(std::time::Duration::from_secs(20));
         for (name, value) in headers {
             request = request.header(name, value);
         }

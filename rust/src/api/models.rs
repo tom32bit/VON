@@ -221,8 +221,12 @@ pub fn test_api_key(provider: String, key: String, model_id: String) -> Result<(
     if key.is_empty() {
         return Err(VonError::InvalidArgument("enter a key first".into()).into());
     }
-    crate::llm::cloud::CloudEngine::test_connection(provider, key, &model_id)
-        .map_err(VonException::from)
+    // `model_id` is no longer needed — the key is checked against the model
+    // listing rather than by spending tokens on a real completion — but it
+    // stays in the signature so the Dart call site does not have to change in
+    // the same release.
+    let _ = model_id;
+    llm::discovery::test_key(provider, key).map_err(VonException::from)
 }
 
 /// The measured device profile, if the user has run the benchmark.

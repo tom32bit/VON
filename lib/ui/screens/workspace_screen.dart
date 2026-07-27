@@ -99,9 +99,9 @@ class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(
                 VonSpace.gutter,
-                VonSpace.xs,
+                0,
                 VonSpace.gutter,
-                VonSpace.sm,
+                VonSpace.md,
               ),
               child: NeuPillTabs(
                 labels: tabs,
@@ -145,11 +145,14 @@ class _WorkspaceHeader extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
+      // The stack here is dense by nature — shimmer bar, title, model id, tab
+      // pills — and four rows with hairline gaps between them read as one
+      // block of noise. The spacing below is what separates them into things.
       padding: const EdgeInsets.fromLTRB(
         VonSpace.sm,
-        VonSpace.sm,
+        VonSpace.md,
         VonSpace.gutter,
-        0,
+        VonSpace.sm,
       ),
       child: Row(
         children: [
@@ -187,13 +190,14 @@ class _WorkspaceHeader extends ConsumerWidget {
                     ),
                   ],
                 ),
+                const SizedBox(height: 3),
                 Row(
                   children: [
                     Icon(
                       project?.provider == 'local'
                           ? Icons.smartphone_rounded
                           : Icons.cloud_outlined,
-                      size: 10,
+                      size: 11,
                       color: VonColors.textDisabled,
                     ),
                     const SizedBox(width: 4),

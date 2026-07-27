@@ -41,6 +41,26 @@ const CONTEXT_BUDGET_TOKENS: usize = 24_000;
 /// Consecutive transient provider failures tolerated before giving up.
 const MAX_RETRIES: usize = 3;
 
+/// How many times a turn may be asked to actually do the thing it just said it
+/// would do.
+///
+/// Open models routed through an OpenAI-compatible endpoint narrate a lot:
+/// "I will read the Design.md file to get the design details" and then stop,
+/// having called nothing. Treating that as the end of the turn is technically
+/// what the model asked for and completely useless to the user, who is left
+/// looking at a promise. Two nudges, then take the answer as final — a model
+/// that will not act after being told twice is not going to on the third.
+const MAX_NUDGES: u32 = 2;
+
+/// Sent back as a user turn when the model narrates instead of acting.
+///
+/// Phrased so a model that genuinely *has* finished can close cleanly rather
+/// than being badgered into inventing work: `task_complete` is one cheap call
+/// and it is what the system prompt already asks for.
+const NUDGE: &str = "You ended your turn without calling a tool. If you described something you \
+     are about to do, do it now — call the tool. If the request is genuinely finished, call \
+     task_complete with a summary. Do not reply with prose alone.";
+
 // An unattended loop on someone's phone must stay bounded. Checked at compile
 // time rather than in a test, so raising either past the ceiling fails the
 // build instead of a test run.
@@ -146,6 +166,7 @@ fn run_inner(options: &RunOptions, emit: &mut dyn FnMut(AgentEvent)) -> Result<(
     let mut totals = llm::Usage::default();
     let mut steps: u32 = 0;
     let mut retries = 0usize;
+    let mut nudges = 0u32;
     let mut final_summary = String::new();
     let mut stop_label = "end_turn";
 
@@ -256,6 +277,23 @@ fn run_inner(options: &RunOptions, emit: &mut dyn FnMut(AgentEvent)) -> Result<(
         messages.push(assistant);
 
         if completion.tool_calls.is_empty() {
+            // A model that stopped mid-thought rather than finishing gets told
+            // so. Not persisted: the nudge is scaffolding for the model, not
+            // part of the conversation the user should have to read back.
+            let stalled = completion.stop_reason != StopReason::Cancelled
+                && completion.stop_reason != StopReason::MaxTokens
+                && !cancelled()
+                && !tool_specs.is_empty();
+            if stalled && nudges < MAX_NUDGES {
+                nudges += 1;
+                emit(AgentEvent::Phase {
+                    phase: "retrying".into(),
+                    detail: "Asking the model to take the action it described".into(),
+                });
+                messages.push(ChatMessage::user(NUDGE));
+                continue;
+            }
+
             final_summary = completion.text;
             stop_label = match completion.stop_reason {
                 StopReason::MaxTokens => "max_tokens",
@@ -264,6 +302,8 @@ fn run_inner(options: &RunOptions, emit: &mut dyn FnMut(AgentEvent)) -> Result<(
             };
             break;
         }
+        // It acted, so the allowance resets — a later stall is a fresh problem.
+        nudges = 0;
 
         // ---- run the tools ----
         emit(AgentEvent::Phase {
