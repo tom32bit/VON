@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -50,7 +51,14 @@ public class AgentService extends Service {
             }
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification(title, text));
+        Notification notification = buildNotification(title, text);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // API 34 wants the type at the call site, not just in the manifest.
+            startForeground(NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
 
         // NOT_STICKY: if Android kills us anyway, the run is already gone with
         // the process. Restarting an empty service would put a notification on
@@ -59,38 +67,29 @@ public class AgentService extends Service {
     }
 
     private Notification buildNotification(String title, String text) {
-        NotificationManager manager = getSystemService(NotificationManager.class);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Agent runs",
-                    // LOW: no sound, no heads-up. The notification is a
-                    // requirement of the platform, not something the user asked
-                    // to be interrupted by.
-                    NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Shown while VON is building something, so Android does not "
-                    + "stop the work when you switch apps.");
-            channel.setShowBadge(false);
-            manager.createNotificationChannel(channel);
-        }
+        // No SDK check around the channel: minSdk is 26, which is exactly the
+        // release that introduced them.
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Agent runs",
+                // LOW: no sound, no heads-up. This notification is a platform
+                // requirement, not something the user asked to be interrupted
+                // by.
+                NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("Shown while VON is building something, so Android does not "
+                + "stop the work when you switch apps.");
+        channel.setShowBadge(false);
+        getSystemService(NotificationManager.class).createNotificationChannel(channel);
 
         // Tapping it returns to VON rather than launching a second copy.
         Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
         PendingIntent tap = null;
         if (launch != null) {
             launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            int mutability = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                    ? PendingIntent.FLAG_IMMUTABLE
-                    : 0;
-            tap = PendingIntent.getActivity(this, 0, launch, mutability);
+            tap = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE);
         }
 
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-
-        return builder
+        return new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -109,11 +108,7 @@ public class AgentService extends Service {
         Intent intent = new Intent(context, AgentService.class);
         intent.putExtra(EXTRA_TITLE, title);
         intent.putExtra(EXTRA_TEXT, text);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent);
-        } else {
-            context.startService(intent);
-        }
+        context.startForegroundService(intent);
     }
 
     static void stop(Context context) {
