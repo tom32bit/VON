@@ -115,8 +115,6 @@ class ModelHubScreen extends ConsumerWidget {
             ('anthropic', 'Anthropic', 'sk-ant-…'),
             ('openai', 'OpenAI', 'sk-…'),
             ('gemini', 'Google Gemini', 'AIza…'),
-            ('groq', 'Groq', 'gsk_…'),
-            ('nvidia', 'NVIDIA NIM', 'nvapi-…'),
           ])
             Padding(
               padding: const EdgeInsets.only(bottom: VonSpace.md),

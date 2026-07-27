@@ -3,12 +3,12 @@
 //! The curated catalog in `catalog.rs` exists to give a sensible default with
 //! real prices and a real RAM figure next to it. It is not meant to be the
 //! ceiling: providers ship models faster than an app store review cycle, your
-//! account may have access to something the catalog has never heard of, and
-//! NVIDIA NIM alone lists dozens. So the picker asks.
+//! account may have access to something the catalog has never heard of. So the
+//! picker asks.
 //!
-//! Every provider here has a list endpoint. The shapes differ — OpenAI's is
-//! copied verbatim by Groq and NVIDIA, Anthropic's is close, Gemini's is its
-//! own thing — so each gets a small reader and they all produce the same rows.
+//! Every provider here has a list endpoint. The shapes differ — Anthropic's is
+//! close to OpenAI's, Gemini's is its own thing — so each gets a small reader
+//! and they all produce the same rows.
 //!
 //! What comes back is merged with the catalog rather than replacing it: a model
 //! we know about keeps its blurb and prices, and everything else arrives with
@@ -108,7 +108,6 @@ pub fn list_models(provider: Provider) -> Result<Vec<ProviderModel>> {
     let mut models = match provider {
         Provider::Gemini => read_gemini(&body),
         Provider::Anthropic => read_anthropic(&body),
-        // OpenAI's shape, which Groq and NVIDIA both copy.
         _ => read_openai(&body),
     };
 
@@ -179,14 +178,6 @@ fn fetch(provider: Provider, key: &str) -> Result<Value> {
             "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
             vec![("x-goog-api-key", key.to_string())],
         ),
-        Provider::Groq => (
-            "https://api.groq.com/openai/v1/models",
-            vec![("authorization", format!("Bearer {key}"))],
-        ),
-        Provider::Nvidia => (
-            "https://integrate.api.nvidia.com/v1/models",
-            vec![("authorization", format!("Bearer {key}"))],
-        ),
         _ => (
             "https://api.openai.com/v1/models",
             vec![("authorization", format!("Bearer {key}"))],
@@ -251,7 +242,7 @@ fn fetch(provider: Provider, key: &str) -> Result<Value> {
     })?
 }
 
-/// OpenAI's `{ data: [{ id, ... }] }`, shared by Groq and NVIDIA NIM.
+/// OpenAI's `{ data: [{ id, ... }] }`.
 fn read_openai(body: &Value) -> Vec<ProviderModel> {
     let Some(entries) = body.get("data").and_then(Value::as_array) else {
         return Vec::new();
@@ -263,7 +254,8 @@ fn read_openai(body: &Value) -> Vec<ProviderModel> {
             if !is_chat_model(id) {
                 return None;
             }
-            // Groq marks retired models inactive rather than removing them.
+            // Some listings mark retired models inactive rather than removing
+            // them; an inactive model is not selectable.
             if entry.get("active").and_then(Value::as_bool) == Some(false) {
                 return None;
             }
@@ -271,7 +263,7 @@ fn read_openai(body: &Value) -> Vec<ProviderModel> {
                 id: id.to_string(),
                 name: id.to_string(),
                 provider: String::new(),
-                // Groq volunteers this; OpenAI and NVIDIA do not.
+                // Volunteered by some listings, absent from OpenAI's.
                 context_tokens: entry
                     .get("context_window")
                     .and_then(Value::as_i64)
@@ -391,17 +383,6 @@ mod tests {
     }
 
     #[test]
-    fn groq_context_windows_are_kept_and_retired_models_dropped() {
-        let body = json!({"data": [
-            {"id": "llama-3.3-70b-versatile", "context_window": 131072, "active": true},
-            {"id": "llama-2-70b-4096", "context_window": 4096, "active": false},
-        ]});
-        let models = read_openai(&body);
-        assert_eq!(models.len(), 1, "an inactive model is not selectable");
-        assert_eq!(models[0].context_tokens, 131_072);
-    }
-
-    #[test]
     fn gemini_filters_on_the_declared_capability_not_the_name() {
         // `embedding` in the name is a hint; `supportedGenerationMethods` is
         // the answer, and Gemini gives it.
@@ -474,9 +455,9 @@ mod tests {
 
     #[test]
     fn curated_falls_back_per_provider() {
-        let groq = curated(Provider::Groq);
-        assert!(!groq.is_empty());
-        assert!(groq.iter().all(|m| m.provider == "groq" && m.curated));
+        let anthropic = curated(Provider::Anthropic);
+        assert!(!anthropic.is_empty());
+        assert!(anthropic.iter().all(|m| m.provider == "anthropic" && m.curated));
     }
 
     #[test]

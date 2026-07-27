@@ -22,17 +22,14 @@ const _providers = <(String, String)>[
   ('anthropic', 'Anthropic'),
   ('openai', 'OpenAI'),
   ('gemini', 'Gemini'),
-  ('groq', 'Groq'),
-  ('nvidia', 'NVIDIA'),
 ];
 
 /// Picks a model, from the full list each provider actually offers.
 ///
-/// Not a dropdown. Providers return dozens of models — NVIDIA NIM alone lists
-/// far more than fits a menu — so this is a searchable list with the provider
-/// as a tab. The curated ones float to the top with their price and blurb; the
-/// rest are listed by id, because being able to reach a model VON has never
-/// heard of is the entire point.
+/// Not a dropdown. A provider can return dozens of models, more than fits a
+/// menu, so this is a searchable list with the provider as a tab. The curated
+/// ones float to the top with their price and blurb; the rest are listed by id,
+/// because being able to reach a model VON has never heard of is the point.
 ///
 /// The last resort is the text field: if a provider ships something between
 /// releases, or an account has access to a private deployment, typing the id
@@ -94,8 +91,8 @@ class _ModelPickerSheetState extends ConsumerState<ModelPickerSheet> {
         ),
         const SizedBox(height: VonSpace.md),
 
-        // Horizontal because six providers do not fit across a phone, and
-        // wrapping them would push the list itself off the screen.
+        // Horizontal so the row stays one line whatever the provider count,
+        // rather than wrapping and pushing the list off the screen.
         SizedBox(
           height: 34,
           child: ListView.separated(

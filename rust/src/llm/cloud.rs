@@ -1,4 +1,4 @@
-//! Cloud providers: Anthropic, OpenAI, Google Gemini, Groq and NVIDIA NIM.
+//! Cloud providers: Anthropic, OpenAI and Google Gemini.
 //!
 //! All three stream Server-Sent Events, but their transcript and tool-calling
 //! shapes differ enough that each gets its own request builder and event
@@ -32,9 +32,6 @@ use crate::state;
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
-/// Groq puts its OpenAI-compatible surface under `/openai/v1`.
-const GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
-const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /// How long the reader waits on one poll before checking for cancellation.
@@ -114,18 +111,9 @@ impl CloudEngine {
                 // in a URL that could be logged.
                 vec![("x-goog-api-key".to_string(), self.api_key.clone())],
             ),
-            // OpenAI, Groq and NVIDIA NIM in one arm: the request bodies are
-            // identical and only the host changes. Written as a binding rather
-            // than a guard because a guarded arm never counts towards
-            // exhaustiveness, and this is the arm that has to cover the rest.
-            openai_like => (
-                match openai_like {
-                    Provider::Groq => GROQ_URL,
-                    Provider::Nvidia => NVIDIA_URL,
-                    _ => OPENAI_URL,
-                }
-                .to_string(),
-                openai_body(request, openai_like),
+            Provider::OpenAi => (
+                OPENAI_URL.to_string(),
+                openai_body(request),
                 vec![(
                     "authorization".to_string(),
                     format!("Bearer {}", self.api_key),
@@ -257,9 +245,9 @@ impl CloudEngine {
                     };
                     match self.provider {
                         Provider::Anthropic => acc.push_anthropic(&value, on_delta)?,
+                        Provider::OpenAi => acc.push_openai(&value, on_delta),
                         Provider::Gemini => acc.push_gemini(&value, on_delta),
                         Provider::Local => unreachable!(),
-                        _ => acc.push_openai(&value, on_delta),
                     }
                 }
             }
@@ -745,7 +733,7 @@ fn object_or_empty(value: &Value) -> Value {
     }
 }
 
-fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
+fn openai_body(request: &GenerateRequest) -> Value {
     let mut messages = Vec::new();
     if !request.system.is_empty() {
         messages.push(json!({ "role": "system", "content": request.system }));
@@ -796,24 +784,10 @@ fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
         "messages": messages,
     });
 
-    // `max_completion_tokens` is OpenAI's newer spelling and the only one its
-    // reasoning models accept. The clones are not OpenAI: NVIDIA NIM and Groq
-    // both document `max_tokens`, and a strict server rejects a field it does
-    // not recognise rather than ignoring it. Same reasoning for
-    // `stream_options`, which is an OpenAI extension Groq adopted and NIM did
-    // not — without it the usage numbers are simply absent, which is a much
-    // smaller loss than a 400.
-    match provider {
-        Provider::OpenAi => {
-            body["max_completion_tokens"] = json!(request.max_tokens);
-            body["stream_options"] = json!({ "include_usage": true });
-        }
-        Provider::Groq => {
-            body["max_tokens"] = json!(request.max_tokens);
-            body["stream_options"] = json!({ "include_usage": true });
-        }
-        _ => body["max_tokens"] = json!(request.max_tokens),
-    }
+    // `max_completion_tokens` rather than `max_tokens`: the older spelling is
+    // rejected outright by OpenAI's reasoning models.
+    body["max_completion_tokens"] = json!(request.max_tokens);
+    body["stream_options"] = json!({ "include_usage": true });
     if !request.tools.is_empty() {
         body["tools"] = json!(request
             .tools
@@ -1046,7 +1020,7 @@ mod tests {
             },
         ])]);
         req.provider = Provider::OpenAi;
-        let body = openai_body(&req, Provider::OpenAi);
+        let body = openai_body(&req);
         let turns = body["messages"].as_array().unwrap();
         // system + two tool messages
         assert_eq!(turns.len(), 3);
@@ -1054,33 +1028,6 @@ mod tests {
         assert_eq!(turns[2]["tool_call_id"], json!("b"));
     }
 
-    /// NVIDIA NIM rejects fields it does not recognise rather than ignoring
-    /// them, so the OpenAI-only spellings must not leak into its request.
-    #[test]
-    fn the_openai_clones_get_the_field_names_they_document() {
-        let mut req = request(vec![ChatMessage::user("hi")]);
-        req.max_tokens = 512;
-
-        let openai = openai_body(&req, Provider::OpenAi);
-        assert_eq!(openai["max_completion_tokens"], json!(512));
-        assert!(openai.get("max_tokens").is_none());
-        assert!(openai.get("stream_options").is_some());
-
-        let groq = openai_body(&req, Provider::Groq);
-        assert_eq!(groq["max_tokens"], json!(512));
-        assert!(groq.get("max_completion_tokens").is_none());
-        assert!(groq.get("stream_options").is_some(), "Groq adopted it");
-
-        let nvidia = openai_body(&req, Provider::Nvidia);
-        assert_eq!(nvidia["max_tokens"], json!(512));
-        assert!(nvidia.get("max_completion_tokens").is_none());
-        assert!(nvidia.get("stream_options").is_none(), "NIM did not");
-    }
-
-    /// The exact 400 NVIDIA returns: `messages[7].tool_calls[0].function.
-    /// arguments must be a valid JSON object string`. A model streamed the
-    /// literal `null`, which parses fine and is not an object, and it was
-    /// replayed on every later turn — so the run could not recover by itself.
     #[test]
     fn a_null_argument_list_never_reaches_a_provider() {
         assert_eq!(object_or_empty(&Value::Null), json!({}));

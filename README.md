@@ -315,6 +315,11 @@ first.
   dependency set.
 - **No OCR.** A scanned PDF has no text layer, and VON says so rather than
   returning an empty document.
+- **A malformed turn is repaired on load, not prevented on write.** Every bug
+  that made a VON permanently unusable had the same shape: a bad value reached
+  the transcript, and the transcript is replayed in full on every later turn.
+  `load_transcript` now normalises tool arguments and answers any call left
+  hanging, so one bad row costs a sentence of context rather than the project.
 - **A run still dies if Android kills the process outright.** The foreground
   service makes that far less likely, not impossible; work is persisted per
   step, so what finished survives, but the step in flight does not.

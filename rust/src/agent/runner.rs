@@ -29,6 +29,7 @@ use crate::llm::{
     Provider,
     Role,
     StopReason,
+    ToolCall,
     ToolResult,
 };
 use crate::state;
@@ -433,20 +434,33 @@ fn persist_message(
     Ok(())
 }
 
-/// Rebuilds the in-memory transcript from SQLite.
+/// Rebuilds the in-memory transcript from SQLite, repairing it on the way.
+///
+/// Every bug that has made a VON permanently unusable has had the same shape: a
+/// malformed value reached the transcript, and the transcript is replayed in
+/// full on every subsequent turn, so one bad row failed every future request
+/// rather than just the one that produced it. The user's only escape was to
+/// clear the conversation and lose the context.
+///
+/// Repair belongs here rather than only at the point each bug was found. The
+/// send path can be made careful, but it cannot fix rows written before it was;
+/// this runs against whatever is actually on disk, including rows written by
+/// builds that no longer exist.
 fn load_transcript(project_id: &str) -> Result<Vec<ChatMessage>> {
     let rows = db::list_messages(project_id)?;
-    let mut out = Vec::with_capacity(rows.len());
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(rows.len());
+
     for row in rows {
         let role = Role::parse(&row.role);
         let message = match role {
-            Role::Assistant => ChatMessage::assistant(
-                row.content,
-                serde_json::from_str(&row.steps_json).unwrap_or_default(),
-            ),
-            Role::Tool => ChatMessage::tool(
-                serde_json::from_str(&row.steps_json).unwrap_or_default(),
-            ),
+            Role::Assistant => {
+                let calls: Vec<ToolCall> =
+                    serde_json::from_str(&row.steps_json).unwrap_or_default();
+                ChatMessage::assistant(row.content, calls.into_iter().filter_map(repair_call).collect())
+            }
+            Role::Tool => {
+                ChatMessage::tool(serde_json::from_str(&row.steps_json).unwrap_or_default())
+            }
             _ => ChatMessage {
                 role,
                 text: row.content,
@@ -456,7 +470,83 @@ fn load_transcript(project_id: &str) -> Result<Vec<ChatMessage>> {
         };
         out.push(message);
     }
+
+    close_open_tool_calls(&mut out);
     Ok(out)
+}
+
+/// Drops a tool call no provider would accept, and normalises the rest.
+///
+/// A call with no name cannot be replayed at all — there is nothing to send.
+/// Arguments that are not an object are the NVIDIA 400 in its stored form: the
+/// value parses as JSON and is still rejected, on every turn, forever.
+fn repair_call(mut call: ToolCall) -> Option<ToolCall> {
+    if call.name.trim().is_empty() {
+        return None;
+    }
+    if !call.arguments.is_object() {
+        call.arguments = serde_json::json!({});
+    }
+    if call.id.trim().is_empty() {
+        call.id = format!("repaired-{}", uuid::Uuid::new_v4());
+    }
+    Some(call)
+}
+
+/// Answers any tool call the transcript left hanging.
+///
+/// Every provider rejects an assistant turn carrying a tool call with no
+/// matching result. The run loop is careful to record one even on cancellation
+/// and error, but it cannot help when Android kills the process between the two
+/// writes — and the row that survives is exactly the one that breaks the next
+/// request. Synthesising the missing result costs a sentence of context and
+/// turns a permanently broken VON into one that simply continues.
+fn close_open_tool_calls(messages: &mut Vec<ChatMessage>) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].role != Role::Assistant || messages[index].tool_calls.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        let answered: std::collections::HashSet<String> = messages
+            .get(index + 1)
+            .filter(|next| next.role == Role::Tool)
+            .map(|next| {
+                next.tool_results
+                    .iter()
+                    .map(|r| r.call_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let missing: Vec<ToolResult> = messages[index]
+            .tool_calls
+            .iter()
+            .filter(|call| !answered.contains(&call.id))
+            .map(|call| ToolResult {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                content: "This tool did not finish — the app was closed while it was running. \
+                          Run it again if the result still matters."
+                    .to_string(),
+                is_error: true,
+            })
+            .collect();
+
+        if missing.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        match messages.get_mut(index + 1) {
+            // Extend the existing result turn rather than inserting a second
+            // one: two tool turns in a row is its own protocol violation.
+            Some(next) if next.role == Role::Tool => next.tool_results.extend(missing),
+            _ => messages.insert(index + 1, ChatMessage::tool(missing)),
+        }
+        index += 1;
+    }
 }
 
 fn save_memory(project_id: &str, messages: &[ChatMessage]) -> Result<()> {
@@ -514,6 +604,101 @@ pub fn cancel(project_id: &str) {
 
 #[cfg(test)]
 mod tests {
+
+    // ---- transcript repair ------------------------------------------------
+    //
+    // Every bug that made a VON permanently unusable had the same shape: a bad
+    // row reached the transcript, and the transcript is replayed in full on
+    // every later turn. These cover the two shapes seen in the wild.
+
+    fn assistant_calling(calls: Vec<ToolCall>) -> ChatMessage {
+        ChatMessage::assistant("working on it", calls)
+    }
+
+    fn a_call(id: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: "list_files".into(),
+            arguments,
+            thought_signature: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_stored_null_argument_list_is_repaired_to_an_object() {
+        let call = repair_call(a_call("1", serde_json::Value::Null)).unwrap();
+        assert_eq!(call.arguments, serde_json::json!({}));
+
+        // And a real one is left alone.
+        let kept = repair_call(a_call("1", serde_json::json!({"path": "a.py"}))).unwrap();
+        assert_eq!(kept.arguments, serde_json::json!({"path": "a.py"}));
+    }
+
+    #[test]
+    fn a_nameless_call_is_dropped_rather_than_replayed() {
+        let mut call = a_call("1", serde_json::json!({}));
+        call.name = "  ".into();
+        assert!(repair_call(call).is_none(), "there is nothing to send");
+    }
+
+    #[test]
+    fn a_tool_call_the_process_died_on_gets_an_answer() {
+        // Killed between writing the assistant turn and writing its result.
+        // Every provider rejects that pairing, so without repair the VON is
+        // broken for good.
+        let mut messages = vec![
+            ChatMessage::user("go"),
+            assistant_calling(vec![a_call("call-1", serde_json::json!({}))]),
+        ];
+        close_open_tool_calls(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(messages[2].tool_results[0].call_id, "call-1");
+        assert!(messages[2].tool_results[0].is_error);
+    }
+
+    #[test]
+    fn a_partly_answered_turn_is_topped_up_not_duplicated() {
+        let mut messages = vec![
+            assistant_calling(vec![
+                a_call("call-1", serde_json::json!({})),
+                a_call("call-2", serde_json::json!({})),
+            ]),
+            ChatMessage::tool(vec![ToolResult {
+                call_id: "call-1".into(),
+                name: "list_files".into(),
+                content: "one file".into(),
+                is_error: false,
+            }]),
+        ];
+        close_open_tool_calls(&mut messages);
+
+        // Two tool turns in a row would be its own protocol violation.
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].tool_results.len(), 2);
+        assert!(!messages[1].tool_results[0].is_error, "the real result stands");
+        assert_eq!(messages[1].tool_results[1].call_id, "call-2");
+    }
+
+    #[test]
+    fn a_complete_transcript_is_left_exactly_as_it_was() {
+        let mut messages = vec![
+            ChatMessage::user("go"),
+            assistant_calling(vec![a_call("call-1", serde_json::json!({}))]),
+            ChatMessage::tool(vec![ToolResult {
+                call_id: "call-1".into(),
+                name: "list_files".into(),
+                content: "done".into(),
+                is_error: false,
+            }]),
+        ];
+        let before = messages.len();
+        close_open_tool_calls(&mut messages);
+        assert_eq!(messages.len(), before);
+        assert_eq!(messages[2].tool_results.len(), 1);
+    }
+
     use super::*;
     use crate::llm::ToolCall;
     use serde_json::json;

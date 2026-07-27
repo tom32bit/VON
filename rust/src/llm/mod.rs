@@ -20,11 +20,6 @@ pub enum Provider {
     Anthropic,
     OpenAi,
     Gemini,
-    /// Groq and NVIDIA NIM both serve the OpenAI chat-completions shape, so
-    /// they are separate providers only for key storage and model listing —
-    /// the request builder and stream reducer are OpenAI's.
-    Groq,
-    Nvidia,
 }
 
 impl Provider {
@@ -34,8 +29,6 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
-            Self::Groq => "groq",
-            Self::Nvidia => "nvidia",
         }
     }
 
@@ -45,8 +38,14 @@ impl Provider {
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "openai" | "gpt" => Ok(Self::OpenAi),
             "gemini" | "google" => Ok(Self::Gemini),
-            "groq" => Ok(Self::Groq),
-            "nvidia" | "nim" | "nvidia-nim" => Ok(Self::Nvidia),
+            // Named rather than lumped in with a typo: a VON created while
+            // these were offered still has one recorded, and "unknown provider
+            // 'groq'" would read as a bug rather than a removal.
+            removed @ ("groq" | "nvidia" | "nim" | "nvidia-nim") => {
+                Err(VonError::InvalidArgument(format!(
+                    "'{removed}' is no longer one of VON's providers. Use Switch Model to pick                      another for this VON — the conversation and files are untouched."
+                )))
+            }
             other => Err(VonError::InvalidArgument(format!(
                 "unknown provider '{other}'"
             ))),
@@ -63,18 +62,11 @@ impl Provider {
             Self::Anthropic => "Anthropic",
             Self::OpenAi => "OpenAI",
             Self::Gemini => "Google Gemini",
-            Self::Groq => "Groq",
-            Self::Nvidia => "NVIDIA NIM",
         }
     }
 
-    /// Whether this provider speaks OpenAI's chat-completions dialect.
-    ///
-    /// Groq and NVIDIA NIM are deliberate clones of it, down to the SSE frame
-    /// shape, so every one of them shares `openai_body` and `push_openai`.
-    pub fn is_openai_compatible(self) -> bool {
-        matches!(self, Self::OpenAi | Self::Groq | Self::Nvidia)
-    }
+    /// Every provider VON offers, for the settings and picker screens.
+    pub const ALL_CLOUD: [Self; 3] = [Self::Anthropic, Self::OpenAi, Self::Gemini];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
