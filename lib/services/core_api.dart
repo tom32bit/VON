@@ -171,12 +171,17 @@ class CoreApi {
   Future<String> readFile(String projectId, String path) =>
       rust_files.readProjectFile(projectId: projectId, path: path);
 
-  Future<BigInt> writeFile(String projectId, String path, String content) =>
-      rust_files.writeProjectFile(
-        projectId: projectId,
-        path: path,
-        content: content,
-      );
+  /// Returns the number of bytes written. `.toInt()` rather than a raw cast:
+  /// frb maps Rust `i64` to `PlatformInt64`, which is an `int` natively and a
+  /// `BigInt` on web — `.toInt()` is valid on both.
+  Future<int> writeFile(String projectId, String path, String content) async {
+    final written = await rust_files.writeProjectFile(
+      projectId: projectId,
+      path: path,
+      content: content,
+    );
+    return written.toInt();
+  }
 
   Future<void> deleteFile(String projectId, String path) =>
       rust_files.deleteProjectFile(projectId: projectId, path: path);

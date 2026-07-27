@@ -411,9 +411,10 @@ class _DownloadControl extends ConsumerWidget {
             ref.invalidate(offlineModelsProvider);
           });
         }
-        final fraction = progress.totalBytes > BigInt.zero
-            ? progress.receivedBytes / progress.totalBytes
-            : null;
+        // Same PlatformInt64 story as writeFile: normalise before arithmetic.
+        final total = progress.totalBytes.toInt();
+        final received = progress.receivedBytes.toInt();
+        final fraction = total > 0 ? received / total : null;
         return NeuSurface(
           depth: NeuDepth.concave,
           radius: 22,

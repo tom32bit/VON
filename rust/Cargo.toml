@@ -15,7 +15,7 @@ default = ["ffi", "local-llm", "wasm-exec", "python-exec"]
 # `cargo test` runs that have not run codegen. See src/lib.rs.
 ffi = []
 # Local GGUF inference through llama.cpp. Requires the NDK when cross-compiling.
-local-llm = ["dep:llama-cpp-2"]
+local-llm = ["dep:llama-cpp-2", "dep:encoding_rs"]
 # Wasmtime-backed execution of agent-authored .wasm modules.
 wasm-exec = ["dep:wasmtime", "dep:wasmtime-wasi"]
 # Embedded RustPython interpreter for agent-authored Python.
@@ -50,7 +50,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 mime_guess = "2.0"
 percent-encoding = "2.3"
 
-llama-cpp-2 = { version = "0.1.54", optional = true }
+llama-cpp-2 = { version = "0.1.152", optional = true }
+# Streaming UTF-8 decode for token pieces; `token_to_piece` takes the
+# decoder directly, which is how llama-cpp-rs's own example does it.
+encoding_rs = { version = "0.8", optional = true }
 wasmtime = { version = "20.0", default-features = false, optional = true, features = [
     "cranelift",
     "runtime",

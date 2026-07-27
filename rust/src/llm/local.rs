@@ -245,8 +245,8 @@ mod backend {
     use llama_cpp_2::llama_backend::LlamaBackend;
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::params::LlamaModelParams;
-    use llama_cpp_2::model::{AddBos, LlamaModel, Special};
-    use llama_cpp_2::token::data_array::LlamaTokenDataArray;
+    use llama_cpp_2::model::{AddBos, LlamaModel};
+    use llama_cpp_2::sampling::LlamaSampler;
     use once_cell::sync::OnceCell;
     use parking_lot::Mutex;
 
@@ -337,6 +337,16 @@ mod backend {
         let budget = max_new_tokens.min(context_len.saturating_sub(prompt_tokens));
         let mut hit_token_limit = false;
 
+        // Greedy: deterministic output, which is what an agent driving tools
+        // wants — a sampled token in the middle of a JSON tool call is a
+        // wasted turn. Wrapped in a chain because that is the sampler API.
+        let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
+
+        // A multi-byte character can straddle two tokens, so pieces are decoded
+        // incrementally rather than per token — decoding each token alone would
+        // emit replacement characters mid-glyph.
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+
         while generated < budget {
             if cancelled() {
                 break;
@@ -351,15 +361,16 @@ mod backend {
                 break;
             }
 
-            let candidates = LlamaTokenDataArray::from_iter(ctx.candidates(), false);
-            let token = ctx.sample_token_greedy(candidates);
+            // Samples from the logits of the batch we last decoded.
+            let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+            sampler.accept(token);
 
             if model.is_eog_token(token) {
                 break;
             }
 
             let piece = model
-                .token_to_str(token, Special::Tokenize)
+                .token_to_piece(token, &mut decoder, true, None)
                 .unwrap_or_default();
             text.push_str(&piece);
             on_delta(Delta::Text(piece));

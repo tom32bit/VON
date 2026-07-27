@@ -38,13 +38,23 @@ All of `PRD.md`, `Design.md`, and `SWE.md` is implemented: the sandbox, the
 agent loop, local (`llama.cpp`) and cloud inference, WASM and Python execution,
 the thermal governor, the localhost preview server, and all five screens.
 
-**This has not been compiled or run.** It was written on a machine with no
-Flutter, Rust, or Android SDK installed. The CI pipeline in
-`.github/workflows/build.yml` is what proves it builds — expect the first run to
-surface version drift in the two dependencies most likely to have moved:
-`llama-cpp-2` (its sampling API changed shape across `0.1.x`) and
-`flutter_rust_bridge` (the generated-code contract is version-locked). Both are
-isolated: `llama.cpp` to `rust/src/llm/local.rs`, the bridge to `lib/src/rust/`.
+It was authored on a machine with no Flutter, Rust, or Android SDK, so CI is
+what proves it builds. The Rust core compiles and all 78 tests pass; the APK is
+built and published by `.github/workflows/build.yml`.
+
+The version drift predicted here did materialise, and is fixed:
+
+- **`rustpython-stdlib 0.3` vs `rusqlite 0.31`** both declared `links =
+  "sqlite3"` with incompatible `libsqlite3-sys` bounds. Cargo permits one
+  package per `links` value, so this was unresolvable by feature flags —
+  rustpython 0.4 agrees with rusqlite on `^0.28`.
+- **`llama-cpp-2`** did move: `sample_token_greedy` is gone in favour of
+  `LlamaSampler`, and `token_to_str` gave way to `token_to_piece`. Now written
+  against 0.1.152 and pinned there, since `"0.1.54"` means `^0.1.54` and
+  silently floated.
+- **`flutter_rust_bridge`** does not export `StreamSink` from the runtime
+  crate — it is generated — and does not resolve a generic type alias in a
+  return position, so `ApiResult<T>` produced junk Dart types.
 
 ---
 
@@ -243,13 +253,12 @@ bridge buys nothing.
 
 ## Known gaps
 
-- **Not compiled.** See Status.
-- **`llama-cpp-2` sampling API.** `local.rs` targets the `0.1.5x` shape
-  (`LlamaTokenDataArray` + `sample_token_greedy`). Newer releases moved to a
-  `LlamaSampler` builder; if the crate has moved, that decode loop is the fix,
-  and it is ~40 lines.
-- **Greedy sampling only.** No temperature or top-p on the local path yet, so
-  local output is deterministic and can loop on repetitive prompts.
+- **Never run on a physical device.** It compiles and the tests pass; nobody
+  has yet watched the agent write a file on real hardware.
+- **Greedy sampling only.** No temperature or top-p on the local path, so local
+  output is deterministic and can loop on repetitive prompts. Deliberate for
+  now — a sampled token in the middle of a JSON tool call is a wasted turn —
+  but it should become configurable.
 - **Context shifting is extractive, not summarised.** `shift_context` keeps the
   task statement and recent turns and marks the gap. SWE §8 calls for
   summarising the dropped span with a cloud model; that costs an extra request
