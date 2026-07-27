@@ -1,0 +1,247 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.24.5"
+  RUST_VERSION: "1.81.0"
+  NDK_VERSION: "27.0.12077973"
+  FRB_VERSION: "2.7.1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Fast feedback on the logic that matters most: sandbox isolation, the
+  # governor's throttling thresholds, the agent loop, and the provider wire
+  # formats. Runs without the llama.cpp feature so it doesn't wait on a C++
+  # build to tell us a path-traversal test broke.
+  rust-test:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # `mod frb_generated;` must resolve even though these jobs don't need the
+      # FFI layer. The apk job generates the real file.
+      - name: Stub the generated bridge
+        run: touch rust/src/frb_generated.rs
+
+      - name: Test
+        working-directory: rust
+        run: |
+          cargo test --no-default-features --features wasm-exec,python-exec \
+            -- --nocapture
+
+  # Sandbox escape is the one failure mode with real consequences for a user's
+  # device, so it gets its own gate that cannot be skipped by a flaky sibling.
+  sandbox-isolation:
+    name: Sandbox isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Stub the generated bridge
+        run: touch rust/src/frb_generated.rs
+      - name: Path traversal, symlink escape, and quota tests
+        working-directory: rust
+        run: |
+          cargo test --no-default-features sandbox:: -- --nocapture
+          cargo test --no-default-features governor:: -- --nocapture
+
+  # Style, deliberately NOT a gate on the APK. A rustfmt nit should never be
+  # the reason you can't install the app on your phone.
+  lint:
+    name: Lint (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Stub the generated bridge
+        run: touch rust/src/frb_generated.rs
+      - name: Formatting
+        working-directory: rust
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        working-directory: rust
+        run: |
+          cargo clippy --no-default-features --features wasm-exec,python-exec \
+            --all-targets -- -D warnings
+
+  flutter-analyze:
+    name: Flutter analyze & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - run: flutter pub get
+
+      # lib/src/rust/ is generated and gitignored. Everything below this line
+      # would fail to resolve without it.
+      - name: Generate FFI bindings
+        run: |
+          cargo install flutter_rust_bridge_codegen \
+            --version ${{ env.FRB_VERSION }} --locked
+          flutter_rust_bridge_codegen generate
+
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+
+  # The job that produces something you can actually install.
+  #
+  # arm64 only: it is every Android phone made in roughly the last decade, and
+  # building three ABIs triples the llama.cpp compile for no benefit here.
+  apk:
+    name: APK (arm64)
+    runs-on: ubuntu-latest
+    needs: [rust-test]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install NDK
+        run: |
+          echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;${{ env.NDK_VERSION }}" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk and the bridge codegen
+        run: |
+          cargo install cargo-ndk --locked
+          cargo install flutter_rust_bridge_codegen \
+            --version ${{ env.FRB_VERSION }} --locked
+
+      - run: flutter pub get
+
+      - name: Generate FFI bindings
+        run: flutter_rust_bridge_codegen generate
+
+      # Full feature set: llama.cpp, Wasmtime and RustPython all in the binary.
+      # Allowed to fail — llama.cpp cross-compilation is the single most
+      # fragile step in this pipeline, and it should not cost you the build.
+      - name: Cross-compile the core (full)
+        id: core_full
+        continue-on-error: true
+        run: ./tool/build_rust.sh --release --abi arm64
+
+      # Cloud-only fallback. No on-device inference, but the sandbox, agent
+      # loop, executors, preview server and entire UI are identical — enough to
+      # exercise everything with an API key.
+      - name: Cross-compile the core (cloud-only fallback)
+        if: steps.core_full.outcome == 'failure'
+        run: |
+          echo "::warning::Full build failed — falling back to a cloud-only core."
+          ./tool/build_rust.sh --release --abi arm64 --cloud-only
+
+      - name: Confirm the native library exists
+        run: |
+          so="android/app/src/main/jniLibs/arm64-v8a/libvon.so"
+          test -f "$so" || {
+            echo "::error::$so is missing — the app would install then crash on first use"
+            exit 1
+          }
+          echo "VARIANT=$(cat android/app/src/main/jniLibs/.variant)" >> "$GITHUB_ENV"
+          echo "libvon.so $(du -h "$so" | cut -f1) — $(cat android/app/src/main/jniLibs/.variant)"
+
+      # Signed with the debug key (android/app/build.gradle falls back when
+      # key.properties is absent). Fine for sideloading; not Play-store material.
+      - name: Build APK
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: Name the artifact
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             "dist/von-${VARIANT}-${GITHUB_SHA:0:7}.apk"
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: von-apk
+          path: dist/*.apk
+          retention-days: 30
+
+      # A release asset, not just a workflow artifact: artifacts require a
+      # GitHub login and download as a zip, which is miserable on a phone. This
+      # gives a stable URL you can open in the phone's browser and tap:
+      #   https://github.com/<owner>/<repo>/releases/latest
+      - name: Publish rolling dev release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$VARIANT" = "cloud-only" ]; then
+            WARNING=$'\n> **On-device inference is not in this build** — the llama.cpp cross-compile failed. Add a cloud API key in the Model Hub to use it.\n'
+          else
+            WARNING=""
+          fi
+
+          {
+            echo "Automated build of \`main\` @ \`${GITHUB_SHA:0:7}\`."
+            echo ""
+            echo "**Variant:** \`${VARIANT}\` · **ABI:** arm64-v8a"
+            echo "$WARNING"
+            echo "Signed with a debug key, so Android will ask you to allow"
+            echo "installs from your browser the first time."
+            echo ""
+            echo "**Install:** download the \`.apk\` below on your phone and open it."
+          } > notes.md
+
+          gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+          gh release create dev \
+            --prerelease \
+            --title "VON dev build (${GITHUB_SHA:0:7})" \
+            --notes-file notes.md \
+            dist/*.apk

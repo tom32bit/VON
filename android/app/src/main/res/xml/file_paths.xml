@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the exports directory is shareable. Project sandboxes, the SQLite
+  database (which holds API keys), and downloaded model weights are deliberately
+  absent — the share sheet must not be able to reach them.
+-->
+<paths>
+    <files-path name="exports" path="exports/" />
+</paths>

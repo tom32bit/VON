@@ -1,0 +1,110 @@
+plugins {
+    id "com.android.application"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader -> localProperties.load(reader) }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
+def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "0.1.0"
+
+android {
+    namespace = "com.von.app"
+    compileSdk = 35
+
+    // Pinned rather than inherited: the Rust core is cross-compiled against a
+    // specific NDK in CI, and a mismatch between that and Gradle's NDK produces
+    // link errors that only surface on device.
+    ndkVersion = "27.0.12077973"
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        applicationId = "com.von.app"
+
+        // API 26 is the floor for the 64-bit-only ABIs and for the filesystem
+        // APIs the sandbox relies on. AThermalManager needs API 30 and is
+        // resolved at runtime with dlsym, so older devices still install and
+        // fall back to sysfs (see governor.rs).
+        minSdk = 26
+        targetSdk = 35
+
+        versionCode = flutterVersionCode.toInteger()
+        versionName = flutterVersionName
+
+        ndk {
+            // 32-bit ARM is included for reach, but a 7B model will not run
+            // there — the Device Profiler tells the user so rather than
+            // letting it fail at load time.
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+        }
+    }
+
+    // The Rust core is cross-compiled by `cargo-ndk` into jniLibs before the
+    // Gradle build runs (see tool/build_rust.sh and the CI workflow). Gradle
+    // packages whatever it finds there.
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ["src/main/jniLibs"]
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            // The .so files are already stripped by the release profile, and
+            // leaving them uncompressed lets Android mmap them directly instead
+            // of extracting a copy at install time.
+            useLegacyPackaging = false
+        }
+    }
+
+    signingConfigs {
+        release {
+            def keystoreProperties = new Properties()
+            def keystoreFile = rootProject.file("key.properties")
+            if (keystoreFile.exists()) {
+                keystoreFile.withReader("UTF-8") { keystoreProperties.load(it) }
+                storeFile = file(keystoreProperties["storeFile"])
+                storePassword = keystoreProperties["storePassword"]
+                keyAlias = keystoreProperties["keyAlias"]
+                keyPassword = keystoreProperties["keyPassword"]
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
+        release {
+            // Falls back to the debug key so `flutter build apk --release`
+            // works out of the box for someone evaluating the project.
+            signingConfig = rootProject.file("key.properties").exists()
+                ? signingConfigs.release
+                : signingConfigs.debug
+
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+    }
+}
+
+flutter {
+    source = "../.."
+}

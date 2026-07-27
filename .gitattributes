@@ -1,0 +1,23 @@
+# Normalise line endings.
+#
+# This repo is authored on Windows but every CI job runs on Linux. Without
+# this, `tool/build_rust.sh` gets checked out with CRLF and bash fails with
+# `/usr/bin/env: 'bash\r': No such file or directory` — a confusing way to
+# discover a line-ending problem.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.gradle  text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.bat     text eol=crlf
+
+# Never touched by normalisation.
+*.png     binary
+*.jpg     binary
+*.jks     binary
+*.keystore binary
+*.gguf    binary
+*.so      binary
+*.apk     binary
+*.aab     binary

@@ -1,0 +1,20 @@
+# flutter_rust_bridge codegen configuration.
+#
+# Run `flutter_rust_bridge_codegen generate` after changing anything under
+# rust/src/api/. The output in lib/src/rust/ is generated and gitignored — CI
+# regenerates it before every build, so a stale checked-in copy can never
+# silently disagree with the Rust it claims to bind.
+
+rust_input: crate::api
+rust_root: rust/
+dart_output: lib/src/rust
+rust_output: rust/src/frb_generated.rs
+
+dart_entrypoint_class_name: RustLib
+
+# Keep the generated Dart formatted; it is read during debugging.
+dart_format_line_length: 80
+
+# The Rust side owns all validation. Generating Dart-side asserts as well would
+# duplicate the rules and let them drift.
+full_dep: false
