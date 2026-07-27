@@ -525,6 +525,7 @@ mod tests {
                 id: "1".into(),
                 name: name.into(),
                 arguments: args,
+                thought_signature: String::new(),
             }],
         )
     }

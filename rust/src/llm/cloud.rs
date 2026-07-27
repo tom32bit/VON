@@ -257,6 +257,7 @@ struct PartialCall {
     id: String,
     name: String,
     args_json: String,
+    thought_signature: String,
 }
 
 #[derive(Default)]
@@ -283,6 +284,7 @@ impl Accumulator {
                     c.id
                 },
                 name: c.name,
+                thought_signature: c.thought_signature,
                 // Always an object, never merely "valid JSON".
                 //
                 // An empty or truncated fragment means the stream was cut, and
@@ -532,6 +534,14 @@ impl Accumulator {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
+                    // A sibling of `functionCall` on the Part, not a field
+                    // inside it — which is easy to miss and costs a 400 on the
+                    // *next* turn rather than this one.
+                    let thought_signature = part
+                        .get("thoughtSignature")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     if name.is_empty() {
                         continue;
                     }
@@ -552,6 +562,7 @@ impl Accumulator {
                                 .get("args")
                                 .map(|a| a.to_string())
                                 .unwrap_or_else(|| "{}".into()),
+                            thought_signature,
                         },
                     );
                 }
@@ -770,12 +781,19 @@ fn gemini_body(request: &GenerateRequest) -> Value {
                     parts.push(json!({ "text": message.text }));
                 }
                 for call in &message.tool_calls {
-                    parts.push(json!({
+                    let mut part = json!({
                         "functionCall": {
                             "name": call.name,
                             "args": object_or_empty(&call.arguments),
                         },
-                    }));
+                    });
+                    // Replayed exactly as received. Gemini's thinking models
+                    // reject a functionCall that comes back without the
+                    // signature they issued with it.
+                    if !call.thought_signature.is_empty() {
+                        part["thoughtSignature"] = json!(call.thought_signature);
+                    }
+                    parts.push(part);
                 }
                 if parts.is_empty() {
                     continue;
@@ -1009,6 +1027,50 @@ mod tests {
             "got {:?}",
             done.tool_calls[0].arguments
         );
+    }
+
+    /// Gemini 3's thinking models sign each function call and refuse the next
+    /// turn if the signature does not come back with it — "Function call is
+    /// missing a thought_signature in functionCall parts". The signature sits
+    /// on the Part, beside functionCall rather than inside it, which is easy to
+    /// miss and costs a 400 on the turn *after* the one that dropped it.
+    #[test]
+    fn a_gemini_thought_signature_survives_the_round_trip() {
+        let mut acc = Accumulator::default();
+        acc.push_gemini(
+            &json!({"candidates":[{"content":{"parts":[{
+                "functionCall": {"name": "list_files", "args": {}},
+                "thoughtSignature": "Cs4BAVSoXO8-signature"
+            }]}}]}),
+            &mut |_| {},
+        );
+        let done = acc.finish();
+        assert_eq!(done.tool_calls.len(), 1);
+        assert_eq!(done.tool_calls[0].thought_signature, "Cs4BAVSoXO8-signature");
+
+        // And it goes back out on the model turn.
+        let replayed = gemini_body(&request(vec![ChatMessage::assistant(
+            "",
+            done.tool_calls.clone(),
+        )]));
+        let part = &replayed["contents"][0]["parts"][0];
+        assert_eq!(part["thoughtSignature"], json!("Cs4BAVSoXO8-signature"));
+        assert_eq!(part["functionCall"]["name"], json!("list_files"));
+    }
+
+    /// Every other provider leaves it empty, and an empty signature must not be
+    /// sent — Gemini rejects a blank one as readily as a missing one.
+    #[test]
+    fn an_unsigned_call_sends_no_signature_field() {
+        let call = ToolCall {
+            id: "1".into(),
+            name: "list_files".into(),
+            arguments: json!({}),
+            thought_signature: String::new(),
+        };
+        let body = gemini_body(&request(vec![ChatMessage::assistant("", vec![call])]));
+        let part = &body["contents"][0]["parts"][0];
+        assert!(part.get("thoughtSignature").is_none());
     }
 
     #[test]

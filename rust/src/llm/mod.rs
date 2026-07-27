@@ -110,6 +110,15 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    /// Gemini's opaque proof that this call came out of the model's own
+    /// reasoning.
+    ///
+    /// Thinking models sign each function call and require the signature back
+    /// with it on the next turn; without it the request is refused outright.
+    /// Empty for every other provider, and `serde(default)` so transcripts
+    /// written before this field existed still load.
+    #[serde(default)]
+    pub thought_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -323,6 +323,8 @@ fn call_from_json(value: &serde_json::Value) -> Option<ToolCall> {
             .or_else(|| value.get("input"))
             .cloned()
             .unwrap_or_else(|| serde_json::json!({})),
+        // Gemini's concept; an on-device model has nothing to sign with.
+        thought_signature: String::new(),
     })
 }
 
