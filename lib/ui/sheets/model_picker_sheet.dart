@@ -22,6 +22,7 @@ const _providers = <(String, String)>[
   ('anthropic', 'Anthropic'),
   ('openai', 'OpenAI'),
   ('gemini', 'Gemini'),
+  ('openrouter', 'OpenRouter'),
 ];
 
 /// Picks a model, from the full list each provider actually offers.

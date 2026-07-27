@@ -20,6 +20,12 @@ pub enum Provider {
     Anthropic,
     OpenAi,
     Gemini,
+    /// A normalising proxy in front of everyone else's models.
+    ///
+    /// Unlike the OpenAI-shaped services VON has carried before, OpenRouter's
+    /// whole job is to present one schema over many backends — it is compatible
+    /// by design rather than by imitation, which is a different risk profile.
+    OpenRouter,
 }
 
 impl Provider {
@@ -29,6 +35,7 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
+            Self::OpenRouter => "openrouter",
         }
     }
 
@@ -38,12 +45,14 @@ impl Provider {
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "openai" | "gpt" => Ok(Self::OpenAi),
             "gemini" | "google" => Ok(Self::Gemini),
+            "openrouter" | "open-router" | "or" => Ok(Self::OpenRouter),
             // Named rather than lumped in with a typo: a VON created while
             // these were offered still has one recorded, and "unknown provider
             // 'groq'" would read as a bug rather than a removal.
             removed @ ("groq" | "nvidia" | "nim" | "nvidia-nim") => {
                 Err(VonError::InvalidArgument(format!(
-                    "'{removed}' is no longer one of VON's providers. Use Switch Model to pick                      another for this VON — the conversation and files are untouched."
+                    "'{removed}' is no longer one of VON's providers. Use Switch Model to pick \
+                     another for this VON — the conversation and files are untouched."
                 )))
             }
             other => Err(VonError::InvalidArgument(format!(
@@ -62,11 +71,17 @@ impl Provider {
             Self::Anthropic => "Anthropic",
             Self::OpenAi => "OpenAI",
             Self::Gemini => "Google Gemini",
+            Self::OpenRouter => "OpenRouter",
         }
     }
 
     /// Every provider VON offers, for the settings and picker screens.
-    pub const ALL_CLOUD: [Self; 3] = [Self::Anthropic, Self::OpenAi, Self::Gemini];
+    pub const ALL_CLOUD: [Self; 4] = [
+        Self::Anthropic,
+        Self::OpenAi,
+        Self::Gemini,
+        Self::OpenRouter,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

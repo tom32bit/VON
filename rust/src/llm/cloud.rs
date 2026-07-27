@@ -1,4 +1,4 @@
-//! Cloud providers: Anthropic, OpenAI and Google Gemini.
+//! Cloud providers: Anthropic, OpenAI, Google Gemini and OpenRouter.
 //!
 //! All three stream Server-Sent Events, but their transcript and tool-calling
 //! shapes differ enough that each gets its own request builder and event
@@ -32,6 +32,7 @@ use crate::state;
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /// How long the reader waits on one poll before checking for cancellation.
@@ -111,9 +112,23 @@ impl CloudEngine {
                 // in a URL that could be logged.
                 vec![("x-goog-api-key".to_string(), self.api_key.clone())],
             ),
+            Provider::OpenRouter => (
+                OPENROUTER_URL.to_string(),
+                openai_body(request, Provider::OpenRouter),
+                vec![
+                    ("authorization".to_string(), format!("Bearer {}", self.api_key)),
+                    // Optional, and good manners: OpenRouter attributes traffic
+                    // to the app that sent it rather than to an anonymous key.
+                    ("x-title".to_string(), "VON".to_string()),
+                    (
+                        "http-referer".to_string(),
+                        "https://github.com/tom32bit/VON".to_string(),
+                    ),
+                ],
+            ),
             Provider::OpenAi => (
                 OPENAI_URL.to_string(),
-                openai_body(request),
+                openai_body(request, Provider::OpenAi),
                 vec![(
                     "authorization".to_string(),
                     format!("Bearer {}", self.api_key),
@@ -245,9 +260,11 @@ impl CloudEngine {
                     };
                     match self.provider {
                         Provider::Anthropic => acc.push_anthropic(&value, on_delta)?,
-                        Provider::OpenAi => acc.push_openai(&value, on_delta),
                         Provider::Gemini => acc.push_gemini(&value, on_delta),
                         Provider::Local => unreachable!(),
+                        // OpenAI's frame shape, which is precisely what
+                        // OpenRouter exists to normalise everything else into.
+                        _ => acc.push_openai(&value, on_delta),
                     }
                 }
             }
@@ -733,7 +750,7 @@ fn object_or_empty(value: &Value) -> Value {
     }
 }
 
-fn openai_body(request: &GenerateRequest) -> Value {
+fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
     let mut messages = Vec::new();
     if !request.system.is_empty() {
         messages.push(json!({ "role": "system", "content": request.system }));
@@ -784,10 +801,24 @@ fn openai_body(request: &GenerateRequest) -> Value {
         "messages": messages,
     });
 
-    // `max_completion_tokens` rather than `max_tokens`: the older spelling is
-    // rejected outright by OpenAI's reasoning models.
-    body["max_completion_tokens"] = json!(request.max_tokens);
-    body["stream_options"] = json!({ "include_usage": true });
+    // Only what each one documents, and nothing extra.
+    //
+    // This is the lesson from the two OpenAI-compatible services that came
+    // before: an unrecognised field is not politely ignored by a strict server,
+    // it is a 400, and it surfaces as a broken provider rather than a bad
+    // parameter. `max_completion_tokens` is OpenAI's spelling and the only one
+    // its reasoning models accept; OpenRouter documents `max_tokens`.
+    //
+    // `stream_options` is an OpenAI extension. OpenRouter does not document it,
+    // so it is not sent — the cost is that usage counts arrive as zero there,
+    // which is a far smaller loss than a request that never runs.
+    match provider {
+        Provider::OpenRouter => body["max_tokens"] = json!(request.max_tokens),
+        _ => {
+            body["max_completion_tokens"] = json!(request.max_tokens);
+            body["stream_options"] = json!({ "include_usage": true });
+        }
+    }
     if !request.tools.is_empty() {
         body["tools"] = json!(request
             .tools
@@ -1020,7 +1051,7 @@ mod tests {
             },
         ])]);
         req.provider = Provider::OpenAi;
-        let body = openai_body(&req);
+        let body = openai_body(&req, Provider::OpenAi);
         let turns = body["messages"].as_array().unwrap();
         // system + two tool messages
         assert_eq!(turns.len(), 3);

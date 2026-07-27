@@ -76,7 +76,7 @@ The version drift predicted here did materialise, and is fixed:
 │               reachable from Flutter                                 │
 │  agent/       plan → call tools → observe loop, prompts, tool surface│
 │  sandbox.rs   path validation, symlink defence, quotas               │
-│  llm/         cloud SSE (Anthropic/OpenAI/Gemini), llama.cpp, catalog│
+│  llm/         cloud SSE (Anthropic/OpenAI/Gemini/OpenRouter), llama.cpp│
 │  executor.rs  Wasmtime (WASI) + embedded RustPython                  │
 │  governor.rs  thermal + RAM throttling, device tiering               │
 │  server.rs    tiny_http preview on 127.0.0.1                         │

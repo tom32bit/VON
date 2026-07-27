@@ -110,7 +110,20 @@ pub fn list_provider_models(provider: String) -> Result<Vec<CloudModelDto>, VonE
     let models = if has_key {
         llm::discovery::list_models(parsed).map_err(VonException::from)?
     } else {
-        llm::discovery::curated(parsed)
+        let fallback = llm::discovery::curated(parsed);
+        // OpenRouter ships no curated entries — its catalogue is other
+        // people's models and changes constantly, so a hardcoded list would be
+        // wrong within weeks. Without a key there is nothing to show and
+        // nothing to ask, and "returned no models for your key" would be
+        // actively misleading about which of those is the problem.
+        if fallback.is_empty() {
+            return Err(VonError::MissingApiKey(format!(
+                "add a {} key in the Model Hub to see the models it offers",
+                parsed.display_name()
+            ))
+            .into());
+        }
+        fallback
     };
 
     Ok(models

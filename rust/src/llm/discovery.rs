@@ -75,11 +75,7 @@ fn is_chat_model(id: &str) -> bool {
 /// connection" for as long as the connection took to fail.
 pub fn test_key(provider: Provider, key: &str) -> Result<()> {
     let body = fetch(provider, key)?;
-    let count = match provider {
-        Provider::Gemini => read_gemini(&body).len(),
-        Provider::Anthropic => read_anthropic(&body).len(),
-        _ => read_openai(&body).len(),
-    };
+    let count = read_for(provider, &body).len();
     if count == 0 {
         return Err(VonError::Other(format!(
             "{} accepted the key but offered no chat models on it",
@@ -105,11 +101,7 @@ pub fn list_models(provider: Provider) -> Result<Vec<ProviderModel>> {
         .ok_or_else(|| VonError::MissingApiKey(provider.as_str().to_string()))?;
 
     let body = fetch(provider, &key)?;
-    let mut models = match provider {
-        Provider::Gemini => read_gemini(&body),
-        Provider::Anthropic => read_anthropic(&body),
-        _ => read_openai(&body),
-    };
+    let mut models = read_for(provider, &body);
 
     if models.is_empty() {
         return Err(VonError::Other(format!(
@@ -178,6 +170,10 @@ fn fetch(provider: Provider, key: &str) -> Result<Value> {
             "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
             vec![("x-goog-api-key", key.to_string())],
         ),
+        Provider::OpenRouter => (
+            "https://openrouter.ai/api/v1/models",
+            vec![("authorization", format!("Bearer {key}"))],
+        ),
         _ => (
             "https://api.openai.com/v1/models",
             vec![("authorization", format!("Bearer {key}"))],
@@ -240,6 +236,77 @@ fn fetch(provider: Provider, key: &str) -> Result<Value> {
         serde_json::from_str(&text)
             .map_err(|e| VonError::Other(format!("{label} sent a model list we cannot read: {e}")))
     })?
+}
+
+fn read_for(provider: Provider, body: &Value) -> Vec<ProviderModel> {
+    match provider {
+        Provider::Gemini => read_gemini(body),
+        Provider::Anthropic => read_anthropic(body),
+        Provider::OpenRouter => read_openrouter(body),
+        _ => read_openai(body),
+    }
+}
+
+/// OpenRouter's listing, which is the richest of the four.
+///
+/// It carries a display name, a context window and real per-token prices, so
+/// unlike the others nothing has to be guessed or left blank. It also declares
+/// `supported_parameters`, which is the useful part: an agent is worthless
+/// without tool calling, and OpenRouter lists hundreds of models that cannot do
+/// it. Offering those would be offering a guaranteed failure, so they are
+/// filtered out on the provider's own say-so rather than on a guess about the
+/// name.
+fn read_openrouter(body: &Value) -> Vec<ProviderModel> {
+    let Some(entries) = body.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?;
+
+            let calls_tools = entry
+                .get("supported_parameters")
+                .and_then(Value::as_array)
+                .map(|params| params.iter().any(|p| p.as_str() == Some("tools")))
+                .unwrap_or(false);
+            if !calls_tools {
+                return None;
+            }
+
+            Some(ProviderModel {
+                name: entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id)
+                    .to_string(),
+                id: id.to_string(),
+                provider: String::new(),
+                context_tokens: entry
+                    .get("context_length")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                blurb: String::new(),
+                // Quoted strings in dollars per token; the UI works in dollars
+                // per million, which is the unit every provider prices in.
+                input_price: per_million(entry.pointer("/pricing/prompt")),
+                output_price: per_million(entry.pointer("/pricing/completion")),
+                curated: false,
+            })
+        })
+        .collect()
+}
+
+/// Converts OpenRouter's per-token price string to dollars per million.
+///
+/// Negative when absent or unparseable, which is how the UI is told to say
+/// nothing rather than to claim a model is free.
+fn per_million(value: Option<&Value>) -> f32 {
+    value
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|per_token| (per_token * 1_000_000.0) as f32)
+        .unwrap_or(-1.0)
 }
 
 /// OpenAI's `{ data: [{ id, ... }] }`.
@@ -415,6 +482,48 @@ mod tests {
         let models = read_anthropic(&body);
         assert_eq!(models[0].name, "Claude Opus 5");
         assert_eq!(models[1].name, "claude-bare", "no display name falls back to the id");
+    }
+
+    /// OpenRouter lists hundreds of models, a great many of which cannot call
+    /// a tool. An agent without tool calling is worthless, so offering one is
+    /// offering a guaranteed failure — and the provider says which is which.
+    #[test]
+    fn openrouter_offers_only_models_that_can_call_tools() {
+        let body = json!({"data": [
+            {
+                "id": "anthropic/claude-sonnet-4.5",
+                "name": "Anthropic: Claude Sonnet 4.5",
+                "context_length": 200000,
+                "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+                "supported_parameters": ["tools", "tool_choice", "max_tokens"],
+            },
+            {
+                "id": "some/completion-only",
+                "name": "Completion Only",
+                "context_length": 8192,
+                "pricing": {"prompt": "0.0000001", "completion": "0.0000002"},
+                "supported_parameters": ["max_tokens", "temperature"],
+            },
+        ]});
+
+        let models = read_openrouter(&body);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(models[0].name, "Anthropic: Claude Sonnet 4.5");
+        assert_eq!(models[0].context_tokens, 200_000);
+    }
+
+    #[test]
+    fn openrouter_prices_are_converted_to_dollars_per_million() {
+        // Quoted per-token strings; every other provider quotes per million,
+        // and so does the UI.
+        assert_eq!(per_million(Some(&json!("0.000003"))), 3.0);
+        assert_eq!(per_million(Some(&json!("0"))), 0.0);
+
+        // Absent or unparseable means "say nothing", not "free".
+        assert!(per_million(None) < 0.0);
+        assert!(per_million(Some(&json!("not a number"))) < 0.0);
+        assert!(per_million(Some(&json!(0.000003))) < 0.0, "always quoted");
     }
 
     #[test]
