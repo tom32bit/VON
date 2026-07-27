@@ -11,7 +11,7 @@ use crate::api::types::{
 };
 use crate::error::VonError;
 use crate::frb_generated::StreamSink;
-use crate::llm::{catalog, Provider};
+use crate::llm::{self, catalog, Provider};
 use crate::{db, governor, state};
 
 /// Offline models with their download state and a red/yellow/green verdict for
@@ -88,6 +88,43 @@ pub fn list_cloud_models() -> Result<Vec<CloudModelDto>, VonException> {
             blurb: model.blurb,
             input_price: model.input_price,
             output_price: model.output_price,
+            curated: true,
+        })
+        .collect())
+}
+
+/// Every model a provider says this key can reach.
+///
+/// The curated list is a starting point, not a limit — providers ship models
+/// faster than an app store review cycle, and an account may have access to
+/// something VON has never heard of. Anything recognised keeps its description
+/// and prices; the rest arrives with whatever the provider volunteered.
+///
+/// Without a key there is nobody to ask, so this falls back to the curated
+/// entries instead of erroring: an empty picker teaches the user nothing.
+pub fn list_provider_models(provider: String) -> Result<Vec<CloudModelDto>, VonException> {
+    let parsed = Provider::parse(&provider).map_err(VonException::from)?;
+    let configured = db::providers_with_keys().map_err(VonException::from)?;
+    let has_key = configured.iter().any(|p| p == &provider);
+
+    let models = if has_key {
+        llm::discovery::list_models(parsed).map_err(VonException::from)?
+    } else {
+        llm::discovery::curated(parsed)
+    };
+
+    Ok(models
+        .into_iter()
+        .map(|model| CloudModelDto {
+            id: model.id,
+            name: model.name,
+            provider: provider.clone(),
+            context_tokens: model.context_tokens,
+            blurb: model.blurb,
+            input_price: model.input_price,
+            output_price: model.output_price,
+            key_configured: has_key,
+            curated: model.curated,
         })
         .collect())
 }

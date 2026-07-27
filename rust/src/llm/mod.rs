@@ -7,6 +7,7 @@
 
 pub mod catalog;
 pub mod cloud;
+pub mod discovery;
 pub mod local;
 
 use serde::{Deserialize, Serialize};

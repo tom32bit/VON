@@ -126,6 +126,11 @@ class CoreApi {
 
   Future<List<CloudModelDto>> listCloudModels() => rust_models.listCloudModels();
 
+  /// Every model the provider says this key can reach, not just the curated
+  /// few. Falls back to the curated list when no key is stored.
+  Future<List<CloudModelDto>> listProviderModels(String provider) =>
+      rust_models.listProviderModels(provider: provider);
+
   Stream<DownloadProgressDto> downloadModel(String modelId) =>
       rust_models.downloadModel(modelId: modelId);
 

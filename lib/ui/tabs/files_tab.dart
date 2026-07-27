@@ -230,33 +230,32 @@ class _QuotaBar extends StatelessWidget {
       depth: NeuDepth.concave,
       radius: VonRadius.small,
       padding: const EdgeInsets.all(VonSpace.sm),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Text(
-                  '${usage.fileCount} file${usage.fileCount == 1 ? '' : 's'}',
-                  style: VonText.caption,
-                ),
-                const Spacer(),
-                Text(
-                  '${_mb(used)} / ${_mb(max)}',
-                  style: VonText.mono.copyWith(fontSize: 10),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(2),
-              child: LinearProgressIndicator(
-                value: fraction,
-                minHeight: 3,
-                backgroundColor: VonColors.shadowDark,
-                valueColor: AlwaysStoppedAnimation(tone),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Text(
+                '${usage.fileCount} file${usage.fileCount == 1 ? '' : 's'}',
+                style: VonText.caption,
               ),
+              const Spacer(),
+              Text(
+                '${_mb(used)} / ${_mb(max)}',
+                style: VonText.mono.copyWith(fontSize: 10),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: 3,
+              backgroundColor: VonColors.shadowDark,
+              valueColor: AlwaysStoppedAnimation(tone),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

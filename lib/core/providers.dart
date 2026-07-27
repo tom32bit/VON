@@ -107,6 +107,17 @@ final githubAccountProvider = FutureProvider<GitHubAccountDto>((ref) async {
   return ref.read(coreApiProvider).githubAccount();
 });
 
+/// Every model one provider offers, fetched live from its list endpoint.
+///
+/// A family rather than one big list: fetching all five providers to show one
+/// picker would be four wasted requests, and a provider whose key is wrong
+/// should fail on its own rather than emptying everyone else's list.
+final providerModelsProvider =
+    FutureProvider.family<List<CloudModelDto>, String>((ref, provider) async {
+  await ref.watch(coreInitProvider.future);
+  return ref.read(coreApiProvider).listProviderModels(provider);
+});
+
 /// Masked key hint per provider, for the Model Hub's key fields.
 final apiKeyHintProvider =
     FutureProvider.family<String?, String>((ref, provider) async {

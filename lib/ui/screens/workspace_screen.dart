@@ -2,13 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../models/chat.dart';
 import '../../services/core_api.dart';
+import '../sheets/github_push_sheet.dart';
+import '../sheets/model_picker_sheet.dart';
 import '../tabs/chat_tab.dart';
 import '../tabs/files_tab.dart';
-import '../sheets/github_push_sheet.dart';
 import '../tabs/preview_tab.dart';
 import '../widgets/feedback.dart';
 import '../widgets/neumorphic.dart';
@@ -53,7 +55,10 @@ class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: VonColors.bgElevated,
-            content: Text('Export failed: $e', style: VonText.body),
+            content: Text(
+              'Export failed: ${describeError(e)}',
+              style: VonText.body,
+            ),
           ),
         );
       }
@@ -318,128 +323,25 @@ class _SwitchModelButton extends ConsumerWidget {
       tooltip: 'Switch model',
       onPressed: project == null
           ? null
-          : () => showNeuSheet<void>(
+          : () async {
+              // Straight to the picker rather than an explanatory sheet that
+              // then opens one. Two stacked sheets on a phone leaves no room
+              // for the list, and popping the first to make space means
+              // reaching for a context that no longer exists.
+              final choice = await showNeuSheet<ModelChoice>(
                 context: context,
-                builder: (_) => _SwitchModelSheet(
-                  projectId: projectId,
-                  current: project!,
+                builder: (_) => ModelPickerSheet(
+                  currentProvider: project!.provider,
+                  currentModelId: project!.modelId,
                 ),
-              ),
-    );
-  }
-}
-
-class _SwitchModelSheet extends ConsumerWidget {
-  const _SwitchModelSheet({required this.projectId, required this.current});
-
-  final String projectId;
-  final ProjectDto current;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final offline = ref.watch(offlineModelsProvider).valueOrNull ?? const [];
-    final cloud = ref.watch(cloudModelsProvider).valueOrNull ?? const [];
-
-    Future<void> pick(String provider, String modelId) async {
-      await ref
-          .read(projectsProvider.notifier)
-          .setModel(projectId, provider, modelId);
-      if (context.mounted) Navigator.of(context).pop();
-    }
-
-    return SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('Switch model', style: VonText.title),
-          const SizedBox(height: VonSpace.xs),
-          Text(
-            'This VON keeps its conversation and every file — the agent '
-            'picks up exactly where it left off.',
-            style: VonText.secondary,
-          ),
-          const SizedBox(height: VonSpace.lg),
-          for (final model in offline.where((m) => m.downloaded))
-            _SwitchRow(
-              name: model.name,
-              detail: 'On-device · ${model.quant}',
-              icon: Icons.smartphone_rounded,
-              tone: VonColors.success,
-              selected:
-                  current.provider == 'local' && current.modelId == model.id,
-              onTap: () => pick('local', model.id),
-            ),
-          for (final model in cloud.where((m) => m.keyConfigured))
-            _SwitchRow(
-              name: model.name,
-              detail: model.id,
-              icon: Icons.cloud_outlined,
-              tone: VonColors.accentText,
-              selected: current.modelId == model.id,
-              onTap: () => pick(model.provider, model.id),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SwitchRow extends StatelessWidget {
-  const _SwitchRow({
-    required this.name,
-    required this.detail,
-    required this.icon,
-    required this.tone,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String name;
-  final String detail;
-  final IconData icon;
-  final Color tone;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: VonSpace.sm),
-      child: NeuPressable(
-        onTap: onTap,
-        selected: selected,
-        radius: VonRadius.medium,
-        intensity: 0.8,
-        padding: const EdgeInsets.symmetric(
-          horizontal: VonSpace.md,
-          vertical: 12,
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 16, color: tone),
-            const SizedBox(width: VonSpace.sm),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    name,
-                    style: VonText.body.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                  Text(detail, style: VonText.mono),
-                ],
-              ),
-            ),
-            if (selected)
-              const Icon(
-                Icons.check_circle_rounded,
-                size: 18,
-                color: VonColors.accent,
-              ),
-          ],
-        ),
-      ),
+              );
+              if (choice == null) return;
+              // The conversation and the sandbox are untouched, so the next
+              // turn resumes with full context on the new model.
+              await ref
+                  .read(projectsProvider.notifier)
+                  .setModel(projectId, choice.provider, choice.modelId);
+            },
     );
   }
 }

@@ -9,6 +9,7 @@ import '../screens/model_hub_screen.dart';
 import '../widgets/feedback.dart';
 import '../widgets/neumorphic.dart';
 import 'device_profiler_sheet.dart';
+import 'model_picker_sheet.dart';
 
 /// Creates a VON, choosing its type and model.
 ///
@@ -228,6 +229,11 @@ class _KindPicker extends StatelessWidget {
 /// Lists downloaded offline models and cloud models with a configured key.
 /// Anything unavailable is shown with the reason and a route to fix it, rather
 /// than hidden — otherwise the list looks arbitrarily short.
+/// Shows the chosen model and opens the full picker.
+///
+/// A summary row rather than an inline list: the list is now everything the
+/// provider offers, which is dozens of rows, and this sheet already has a name,
+/// a description and a project type above it.
 class _ModelPicker extends ConsumerWidget {
   const _ModelPicker({
     required this.provider,
@@ -241,37 +247,13 @@ class _ModelPicker extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final offline = ref.watch(offlineModelsProvider);
-    final cloud = ref.watch(cloudModelsProvider);
+    final chosen = modelId.isNotEmpty;
+    final offline = ref.watch(offlineModelsProvider).valueOrNull ?? const [];
+    final anyLocal = offline.any((m) => m.downloaded);
+    final anyKey = (ref.watch(cloudModelsProvider).valueOrNull ?? const [])
+        .any((m) => m.keyConfigured);
 
-    if (offline.isLoading || cloud.isLoading) {
-      return const NeuShimmerCard(height: 72, radius: VonRadius.medium);
-    }
-
-    final ready = <_ModelOption>[
-      for (final m in offline.valueOrNull ?? <OfflineModelDto>[])
-        if (m.downloaded)
-          _ModelOption(
-            provider: 'local',
-            id: m.id,
-            name: m.name,
-            detail: 'On-device · ${m.quant}',
-            icon: Icons.smartphone_rounded,
-            tone: VonColors.success,
-          ),
-      for (final m in cloud.valueOrNull ?? <CloudModelDto>[])
-        if (m.keyConfigured)
-          _ModelOption(
-            provider: m.provider,
-            id: m.id,
-            name: m.name,
-            detail: '\$${m.inputPrice}/M in · \$${m.outputPrice}/M out',
-            icon: Icons.cloud_outlined,
-            tone: VonColors.accentText,
-          ),
-    ];
-
-    if (ready.isEmpty) {
+    if (!anyLocal && !anyKey) {
       return NeuSurface(
         depth: NeuDepth.concave,
         radius: VonRadius.medium,
@@ -300,67 +282,61 @@ class _ModelPicker extends ConsumerWidget {
       );
     }
 
-    return Column(
-      children: [
-        for (final option in ready)
-          Padding(
-            padding: const EdgeInsets.only(bottom: VonSpace.sm),
-            child: NeuPressable(
-              onTap: () => onChanged(option.provider, option.id),
-              selected: option.provider == provider && option.id == modelId,
-              radius: VonRadius.medium,
-              intensity: 0.8,
-              padding: const EdgeInsets.symmetric(
-                horizontal: VonSpace.md,
-                vertical: 12,
-              ),
-              child: Row(
-                children: [
-                  Icon(option.icon, size: 16, color: option.tone),
-                  const SizedBox(width: VonSpace.sm),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          option.name,
-                          style: VonText.body.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(option.detail, style: VonText.caption),
-                      ],
-                    ),
-                  ),
-                  if (option.provider == provider && option.id == modelId)
-                    const Icon(
-                      Icons.check_circle_rounded,
-                      size: 18,
-                      color: VonColors.accent,
-                    ),
-                ],
-              ),
+    return NeuPressable(
+      radius: VonRadius.medium,
+      intensity: 0.8,
+      padding: const EdgeInsets.symmetric(
+        horizontal: VonSpace.md,
+        vertical: 12,
+      ),
+      onTap: () async {
+        final choice = await showNeuSheet<ModelChoice>(
+          context: context,
+          builder: (_) => ModelPickerSheet(
+            currentProvider: provider,
+            currentModelId: modelId,
+          ),
+        );
+        if (choice != null) onChanged(choice.provider, choice.modelId);
+      },
+      child: Row(
+        children: [
+          Icon(
+            provider == 'local'
+                ? Icons.smartphone_rounded
+                : Icons.cloud_outlined,
+            size: 16,
+            color: provider == 'local'
+                ? VonColors.success
+                : VonColors.accentText,
+          ),
+          const SizedBox(width: VonSpace.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  chosen ? modelId : 'Choose a model',
+                  style: VonText.body.copyWith(fontWeight: FontWeight.w600),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  chosen
+                      ? (provider == 'local' ? 'On-device' : provider)
+                      : 'On-device weights, or anything your keys can reach',
+                  style: VonText.caption,
+                ),
+              ],
             ),
           ),
-      ],
+          const Icon(
+            Icons.chevron_right_rounded,
+            size: 18,
+            color: VonColors.textSecondary,
+          ),
+        ],
+      ),
     );
   }
-}
-
-class _ModelOption {
-  const _ModelOption({
-    required this.provider,
-    required this.id,
-    required this.name,
-    required this.detail,
-    required this.icon,
-    required this.tone,
-  });
-
-  final String provider;
-  final String id;
-  final String name;
-  final String detail;
-  final IconData icon;
-  final Color tone;
 }

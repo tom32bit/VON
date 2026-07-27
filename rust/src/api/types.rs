@@ -161,10 +161,15 @@ pub struct CloudModelDto {
     pub provider: String,
     pub context_tokens: i64,
     pub blurb: String,
+    /// Negative when the provider volunteered a model VON has no pricing for.
+    /// The UI hides the cost hint rather than claiming a model is free.
     pub input_price: f32,
     pub output_price: f32,
     /// Whether an API key for this provider is configured.
     pub key_configured: bool,
+    /// Whether VON ships a description and prices for this model, as opposed
+    /// to having simply been told it exists.
+    pub curated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
