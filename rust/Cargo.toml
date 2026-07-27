@@ -49,6 +49,9 @@ uuid = { version = "1.8", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 mime_guess = "2.0"
 percent-encoding = "2.3"
+# GitHub's Git Data API takes blob content base64-encoded; binary files in a
+# sandbox make the "utf-8" encoding option unusable.
+base64 = "0.22"
 
 llama-cpp-2 = { version = "0.1.152", optional = true }
 # Streaming UTF-8 decode for token pieces; `token_to_piece` takes the

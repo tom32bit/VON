@@ -15,6 +15,7 @@
 pub mod agent_api;
 pub mod device;
 pub mod files;
+pub mod github_api;
 pub mod init;
 pub mod models;
 pub mod preview;

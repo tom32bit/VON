@@ -132,6 +132,31 @@ pub fn specs(project_kind: &str) -> Vec<ToolSpec> {
         },
     ];
 
+    // Only offered once an account is connected. An unusable tool in the list
+    // is a tool a small model will eventually call and then apologise for.
+    if crate::github::is_connected() {
+        tools.push(ToolSpec {
+            name: "git_push".into(),
+            description:
+                "Publish everything in this project to GitHub as a single commit. Use it when                  the user asks to push, publish, or put the work on GitHub. The repository is                  created under their account if it does not exist. Secrets and dependency                  directories are filtered out automatically."
+                    .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository as `name` (created if needed) or `owner/name`                                         (must already exist). Ask the user if they have not said.",
+                    },
+                    "message": { "type": "string", "description": "Commit message describing this change." },
+                    "branch": { "type": "string", "description": "Branch name. Defaults to `main`." },
+                    "private": { "type": "boolean", "description": "Create the repository private. Defaults to true." }
+                },
+                "required": ["repo"],
+                "additionalProperties": false,
+            }),
+        });
+    }
+
     // Only offer the preview server where it makes sense; an unused tool in the
     // list is a tool a small model will eventually call by mistake.
     if project_kind == "web" {
@@ -194,6 +219,7 @@ pub fn execute(sandbox: &Sandbox, project_id: &str, call: &ToolCall) -> Executio
             effects.preview_url = Some(url.clone());
             format!("Preview is live at {url}. The user can open the Preview tab to see it.")
         }),
+        "git_push" => git_push(sandbox, &call.arguments),
         "task_complete" => {
             let summary = string_arg(&call.arguments, "summary").unwrap_or_default();
             effects.completed = Some(summary.clone());
@@ -240,6 +266,14 @@ pub fn describe(call: &ToolCall) -> String {
         }
         "run_wasm" => format!("Running {}", arg("path")),
         "start_preview" => "Starting live preview".into(),
+        "git_push" => {
+            let repo = arg("repo");
+            if repo.is_empty() {
+                "Pushing to GitHub".into()
+            } else {
+                format!("Pushing to GitHub: {repo}")
+            }
+        }
         "task_complete" => "Finishing up".into(),
         other => format!("Calling {other}"),
     }
@@ -346,6 +380,53 @@ fn start_preview(sandbox: &Sandbox, project_id: &str) -> Result<String> {
         ));
     }
     server::start(project_id, sandbox.clone())
+}
+
+/// Publishes the sandbox to GitHub.
+///
+/// `private` defaults to true. A model that omits the flag is not making a
+/// judgement about who should see the code, and the safe reading of silence is
+/// "not the whole internet" — the user can flip it on GitHub in two clicks,
+/// which is the easier direction to travel.
+fn git_push(sandbox: &Sandbox, args: &Value) -> Result<String> {
+    let repo = string_arg(args, "repo").unwrap_or_default();
+    if repo.trim().is_empty() {
+        return Err(VonError::InvalidArgument(
+            "which repository? Pass `repo` as `name` to create one under the user's account, or \
+             `owner/name` for an existing one. Ask the user if they have not said."
+                .into(),
+        ));
+    }
+    let outcome = crate::github::push_sandbox(
+        sandbox,
+        &repo,
+        &string_arg(args, "branch").unwrap_or_default(),
+        &string_arg(args, "message").unwrap_or_default(),
+        args.get("private").and_then(Value::as_bool).unwrap_or(true),
+        |_| {},
+    )?;
+
+    let mut out = format!(
+        "Pushed {} file{} to {} on branch {} as commit {}.\n{}",
+        outcome.files_pushed,
+        if outcome.files_pushed == 1 { "" } else { "s" },
+        outcome.repo_full_name,
+        outcome.branch,
+        &outcome.commit_sha[..outcome.commit_sha.len().min(7)],
+        outcome.commit_url,
+    );
+    if outcome.created_repo {
+        out.push_str("\nThe repository did not exist and was created.");
+    }
+    if !outcome.skipped.is_empty() {
+        // Named rather than summarised: the agent should be able to tell the
+        // user which file is missing from the repo and why.
+        out.push_str("\n\nLeft out on purpose:\n");
+        for reason in &outcome.skipped {
+            out.push_str(&format!("  - {reason}\n"));
+        }
+    }
+    Ok(out)
 }
 
 fn truncate_observation(mut text: String) -> String {

@@ -90,6 +90,15 @@ class ModelHubScreen extends ConsumerWidget {
 
           const SizedBox(height: VonSpace.lg),
           const _SectionHeader(
+            title: 'GitHub',
+            subtitle: 'Connect an account and VON can publish a project '
+                'straight from its Workspace — or from the chat, by asking.',
+          ),
+          const SizedBox(height: VonSpace.md),
+          const _GitHubCard(),
+
+          const SizedBox(height: VonSpace.lg),
+          const _SectionHeader(
             title: 'Cloud providers',
             subtitle: 'Keys are stored in this app\'s private database and are '
                 'only ever sent to the provider they belong to.',
@@ -529,6 +538,155 @@ class _CompatibilityDot extends StatelessWidget {
         shape: BoxShape.circle,
         color: color,
         boxShadow: [BoxShadow(color: color.withOpacity(0.4), blurRadius: 6)],
+      ),
+    );
+  }
+}
+
+/// Connects a GitHub account with a personal access token (PRD: publishing).
+///
+/// A token rather than OAuth: OAuth needs a redirect URI and a client secret
+/// that would have to ship inside the APK, where it is not a secret at all. A
+/// token the user creates themselves keeps the credential theirs, and they can
+/// scope and revoke it on GitHub without going through VON.
+class _GitHubCard extends ConsumerStatefulWidget {
+  const _GitHubCard();
+
+  @override
+  ConsumerState<_GitHubCard> createState() => _GitHubCardState();
+}
+
+class _GitHubCardState extends ConsumerState<_GitHubCard> {
+  final _controller = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _connect() async {
+    final token = _controller.text.trim();
+    if (token.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      // The core validates against GitHub before storing, so a typo never
+      // becomes the saved token.
+      await ref.read(coreApiProvider).connectGithub(token);
+      _controller.clear();
+      ref
+        ..invalidate(githubConnectedProvider)
+        ..invalidate(githubAccountProvider);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _disconnect() async {
+    await ref.read(coreApiProvider).connectGithub('');
+    ref
+      ..invalidate(githubConnectedProvider)
+      ..invalidate(githubAccountProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final connected = ref.watch(githubConnectedProvider).valueOrNull ?? false;
+    final account = ref.watch(githubAccountProvider);
+
+    return NeuSurface(
+      radius: VonRadius.large,
+      padding: const EdgeInsets.all(VonSpace.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  connected ? 'Connected' : 'Not connected',
+                  style: VonText.heading,
+                ),
+              ),
+              if (connected)
+                switch (account) {
+                  AsyncData(value: final a) when a.connected => NeuChip(
+                      label: '@${a.login}',
+                      icon: Icons.check_rounded,
+                      tone: VonColors.success,
+                    ),
+                  // A stored token that no longer resolves is worth saying out
+                  // loud: the push would otherwise fail at the worst moment.
+                  AsyncError() => const NeuChip(
+                      label: 'Token rejected',
+                      icon: Icons.error_outline_rounded,
+                      tone: VonColors.danger,
+                    ),
+                  _ => const NeuPulsingDots(size: 5),
+                },
+            ],
+          ),
+          const SizedBox(height: VonSpace.sm),
+          Text(
+            connected
+                ? 'VON can create repositories under this account and push a '
+                    'project as a single commit.'
+                : 'Paste a personal access token with the `repo` scope. On '
+                    'GitHub: Settings → Developer settings → Personal '
+                    'access tokens.',
+            style: VonText.secondary,
+          ),
+          const SizedBox(height: VonSpace.md),
+          NeuField(
+            controller: _controller,
+            hint: connected ? 'Replace token' : 'ghp_… or github_pat_…',
+            obscure: true,
+            suffix: NeuIconButton(
+              icon: Icons.link_rounded,
+              size: 32,
+              iconSize: 16,
+              tooltip: 'Verify and connect',
+              onPressed: _busy ? null : _connect,
+            ),
+          ),
+          if (_busy) ...[
+            const SizedBox(height: VonSpace.sm),
+            Row(
+              children: [
+                const NeuPulsingDots(size: 5),
+                const SizedBox(width: VonSpace.sm),
+                Text('Checking the token…', style: VonText.caption),
+              ],
+            ),
+          ],
+          if (_error != null && !_busy) ...[
+            const SizedBox(height: VonSpace.sm),
+            Text(
+              _error!,
+              style: VonText.caption.copyWith(color: VonColors.danger),
+            ),
+          ],
+          if (connected) ...[
+            const SizedBox(height: VonSpace.sm),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: _disconnect,
+                child: Text(
+                  'Disconnect',
+                  style: VonText.caption.copyWith(color: VonColors.danger),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

@@ -20,12 +20,13 @@ use crate::llm::{
     Delta,
     Engine,
     GenerateRequest,
-    Role,
     StopReason,
     ToolCall,
-    ToolSpec,
     Usage,
 };
+// Named only by the gated prompt builders below.
+#[cfg(any(feature = "local-llm", test))]
+use crate::llm::{Role, ToolSpec};
 
 /// Emitted by the model to request a tool. Chosen over a bare JSON object
 /// because it survives the model wrapping output in prose or a code fence.
@@ -111,6 +112,12 @@ impl Engine for LocalEngine {
     }
 }
 
+// build_turns, build_prompt_chatml and tool_protocol serve
+// `backend::render_prompt`, which only exists when llama.cpp is linked in — a
+// cloud-only build has no prompt to render. They are compiled for `test` as
+// well because the tests covering them run in every configuration, which is
+// better than hiding the dead code behind `allow`.
+
 /// Flattens the transcript into `(role, content)` pairs ready for a chat
 /// template.
 ///
@@ -119,6 +126,7 @@ impl Engine for LocalEngine {
 /// `user` and `model`, and handing it one is either dropped or an error
 /// depending on the build. Merging is slightly lossy on templates that *do*
 /// support it, but it behaves identically everywhere, which matters more here.
+#[cfg(any(feature = "local-llm", test))]
 fn build_turns(request: &GenerateRequest) -> Vec<(String, String)> {
     let mut system = request.system.clone();
     if !request.tools.is_empty() {
@@ -175,6 +183,7 @@ fn build_turns(request: &GenerateRequest) -> Vec<(String, String)> {
 /// ChatML, mimicked it back, and emitted a literal `<|im_end|>` that is not a
 /// token it can stop on — so generation ran to the token budget and the tool
 /// call was never in the syntax we asked for.
+#[cfg(any(feature = "local-llm", test))]
 fn build_prompt_chatml(request: &GenerateRequest) -> String {
     let mut out = String::new();
     for (role, text) in build_turns(request) {
@@ -184,6 +193,7 @@ fn build_prompt_chatml(request: &GenerateRequest) -> String {
     out
 }
 
+#[cfg(any(feature = "local-llm", test))]
 fn tool_protocol(tools: &[ToolSpec]) -> String {
     let mut out = String::from(
         "\n\n# Tools\n\nYou can call the tools below. To call one, emit exactly:\n\
@@ -746,8 +756,9 @@ mod tests {
 
     #[test]
     fn a_brace_inside_a_code_string_does_not_end_the_object() {
-        let raw = r#"<tool_call>{"name":"write_file","arguments":{"path":"a.py","content":"d = {}
-print(d)"}}</tool_call>"#;
+        // The newline is escaped, as JSON requires — a literal one inside a
+        // string is a parse error and would be testing the wrong thing.
+        let raw = r#"<tool_call>{"name":"write_file","arguments":{"path":"a.py","content":"d = {}\nprint(d)"}}</tool_call>"#;
         let (_, calls) = parse_tool_calls(raw);
         assert_eq!(calls.len(), 1);
         assert!(calls[0].arguments["content"].as_str().unwrap().contains("print(d)"));

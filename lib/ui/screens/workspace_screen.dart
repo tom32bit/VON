@@ -8,6 +8,7 @@ import '../../models/chat.dart';
 import '../../services/core_api.dart';
 import '../tabs/chat_tab.dart';
 import '../tabs/files_tab.dart';
+import '../sheets/github_push_sheet.dart';
 import '../tabs/preview_tab.dart';
 import '../widgets/feedback.dart';
 import '../widgets/neumorphic.dart';
@@ -206,7 +207,13 @@ class _WorkspaceHeader extends ConsumerWidget {
           ),
           const SizedBox(width: VonSpace.sm),
           _SwitchModelButton(projectId: projectId, project: project),
-          const SizedBox(width: VonSpace.sm),
+          const SizedBox(width: VonSpace.xs),
+          _PublishButton(
+            projectId: projectId,
+            project: project,
+            armed: chat.hasDeliverables && !chat.running,
+          ),
+          const SizedBox(width: VonSpace.xs),
           // Concave (disabled) until the agent has produced something, then it
           // pops out with an accent glow (Design.md §6, Screen 5).
           _DownloadButton(
@@ -216,6 +223,52 @@ class _WorkspaceHeader extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Publishes the VON to GitHub.
+///
+/// Hidden entirely until an account is connected rather than shown disabled: an
+/// icon that does nothing invites tapping, and the place to fix it (the Model
+/// Hub) is two screens away.
+class _PublishButton extends ConsumerWidget {
+  const _PublishButton({
+    required this.projectId,
+    required this.project,
+    required this.armed,
+  });
+
+  final String projectId;
+  final ProjectDto? project;
+  final bool armed;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final connected = ref.watch(githubConnectedProvider).valueOrNull ?? false;
+    if (!connected || project == null) return const SizedBox.shrink();
+
+    return NeuIconButton(
+      icon: Icons.cloud_upload_outlined,
+      size: 38,
+      iconSize: 18,
+      tone: VonColors.textSecondary,
+      selected: !armed,
+      tooltip: armed
+          ? 'Publish this VON to GitHub'
+          : 'Nothing to publish yet — the agent has not created any files',
+      onPressed: !armed
+          ? null
+          : () => showNeuSheet<void>(
+                context: context,
+                builder: (_) => GitHubPushSheet(
+                  projectId: projectId,
+                  suggestedRepo: repoSlug(project!.name, project!.ordinal.toInt()),
+                  suggestedMessage: project!.name.trim().isEmpty
+                      ? 'Update from VON'
+                      : project!.name.trim(),
+                ),
+              ),
     );
   }
 }

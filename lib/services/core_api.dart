@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import '../src/rust/api/agent_api.dart' as rust_agent;
 import '../src/rust/api/device.dart' as rust_device;
 import '../src/rust/api/files.dart' as rust_files;
+import '../src/rust/api/github_api.dart' as rust_github;
 import '../src/rust/api/init.dart' as rust_init;
 import '../src/rust/api/models.dart' as rust_models;
 import '../src/rust/api/preview.dart' as rust_preview;
@@ -13,6 +14,8 @@ import '../src/rust/api/types.dart';
 import '../src/rust/frb_generated.dart';
 
 export '../src/rust/api/agent_api.dart' show AgentEventDto;
+export '../src/rust/api/github_api.dart'
+    show GitHubAccountDto, GitHubPushEventDto;
 export '../src/rust/api/types.dart';
 
 /// The single seam between the Flutter app and the Rust core.
@@ -143,6 +146,38 @@ class CoreApi {
 
   Future<void> testApiKey(String provider, String key, String modelId) =>
       rust_models.testApiKey(provider: provider, key: key, modelId: modelId);
+
+  // ---- github -----------------------------------------------------------
+
+  /// Whether a token is stored. Offline and instant, so the settings screen can
+  /// render its state before the network answers.
+  Future<bool> githubConnected() => rust_github.githubConnected();
+
+  /// Resolves the stored token to an account. Hits the network — a failure here
+  /// means the token stopped working, not that none is stored.
+  Future<rust_github.GitHubAccountDto> githubAccount() =>
+      rust_github.githubAccount();
+
+  /// Validates and stores a personal access token. An empty string disconnects.
+  Future<rust_github.GitHubAccountDto> connectGithub(String token) =>
+      rust_github.connectGithub(token: token);
+
+  /// Publishes a VON as one commit. The stream always ends with a `done` or
+  /// `failed` event.
+  Stream<rust_github.GitHubPushEventDto> pushToGithub({
+    required String projectId,
+    required String repo,
+    String branch = 'main',
+    String message = '',
+    bool private = true,
+  }) =>
+      rust_github.pushProjectToGithub(
+        projectId: projectId,
+        repo: repo,
+        branch: branch,
+        message: message,
+        private: private,
+      );
 
   // ---- device -----------------------------------------------------------
 

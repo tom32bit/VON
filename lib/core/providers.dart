@@ -88,6 +88,25 @@ final cloudModelsProvider = FutureProvider<List<CloudModelDto>>((ref) async {
   return ref.read(coreApiProvider).listCloudModels();
 });
 
+// ---- github ---------------------------------------------------------------
+
+/// Whether a GitHub token is stored. Offline, so it settles immediately and the
+/// connect card never flashes through a wrong state.
+final githubConnectedProvider = FutureProvider<bool>((ref) async {
+  await ref.watch(coreInitProvider.future);
+  return ref.read(coreApiProvider).githubConnected();
+});
+
+/// The account behind the stored token.
+///
+/// Separate from [githubConnectedProvider] because this one makes a request:
+/// an error here means the token was revoked or expired, which the card should
+/// say plainly rather than silently showing "not connected".
+final githubAccountProvider = FutureProvider<GitHubAccountDto>((ref) async {
+  await ref.watch(coreInitProvider.future);
+  return ref.read(coreApiProvider).githubAccount();
+});
+
 /// Masked key hint per provider, for the Model Hub's key fields.
 final apiKeyHintProvider =
     FutureProvider.family<String?, String>((ref, provider) async {
