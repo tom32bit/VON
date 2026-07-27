@@ -19,6 +19,11 @@ pub enum Provider {
     Anthropic,
     OpenAi,
     Gemini,
+    /// Groq and NVIDIA NIM both serve the OpenAI chat-completions shape, so
+    /// they are separate providers only for key storage and model listing —
+    /// the request builder and stream reducer are OpenAI's.
+    Groq,
+    Nvidia,
 }
 
 impl Provider {
@@ -28,6 +33,8 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
+            Self::Groq => "groq",
+            Self::Nvidia => "nvidia",
         }
     }
 
@@ -37,6 +44,8 @@ impl Provider {
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "openai" | "gpt" => Ok(Self::OpenAi),
             "gemini" | "google" => Ok(Self::Gemini),
+            "groq" => Ok(Self::Groq),
+            "nvidia" | "nim" | "nvidia-nim" => Ok(Self::Nvidia),
             other => Err(VonError::InvalidArgument(format!(
                 "unknown provider '{other}'"
             ))),
@@ -53,7 +62,17 @@ impl Provider {
             Self::Anthropic => "Anthropic",
             Self::OpenAi => "OpenAI",
             Self::Gemini => "Google Gemini",
+            Self::Groq => "Groq",
+            Self::Nvidia => "NVIDIA NIM",
         }
+    }
+
+    /// Whether this provider speaks OpenAI's chat-completions dialect.
+    ///
+    /// Groq and NVIDIA NIM are deliberate clones of it, down to the SSE frame
+    /// shape, so every one of them shares `openai_body` and `push_openai`.
+    pub fn is_openai_compatible(self) -> bool {
+        matches!(self, Self::OpenAi | Self::Groq | Self::Nvidia)
     }
 }
 
@@ -228,9 +247,16 @@ pub trait Engine: Send {
 }
 
 /// Builds the engine for a request, resolving API keys from the database.
-pub fn engine_for(provider: Provider) -> Result<Box<dyn Engine>> {
+/// Builds the engine for a project.
+///
+/// `model_id` is the project's own choice, which for the local path is not the
+/// same thing as the Model Hub's default. Selecting a model for one VON does
+/// not — and should not — change what a new VON starts with, so the engine has
+/// to be told which weights this project means rather than reading the global
+/// setting behind its back.
+pub fn engine_for(provider: Provider, model_id: &str) -> Result<Box<dyn Engine>> {
     match provider {
-        Provider::Local => Ok(Box::new(local::LocalEngine::new()?)),
+        Provider::Local => Ok(Box::new(local::LocalEngine::for_model(model_id)?)),
         cloud_provider => {
             let key = crate::db::get_api_key(cloud_provider.as_str())?
                 .filter(|k| !k.trim().is_empty())

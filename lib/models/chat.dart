@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/errors.dart';
 import '../core/providers.dart';
 import '../services/core_api.dart';
 
@@ -174,7 +175,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
         hasDeliverables: rows.any((r) => r.role == 'tool'),
       );
     } catch (e) {
-      state = state.copyWith(loading: false, error: _describe(e));
+      state = state.copyWith(loading: false, error: describeError(e));
     }
   }
 
@@ -419,7 +420,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   void _onStreamError(Object error) {
-    state = state.copyWith(error: _describe(error), errorTransient: true);
+    state = state.copyWith(error: describeError(error), errorTransient: true);
   }
 
   void _finish() {
@@ -453,14 +454,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   void dismissError() => state = state.copyWith(error: null);
-
-  static String _describe(Object error) {
-    final text = error.toString();
-    // Rust exceptions arrive as `VonException(kind, message, transient)`; the
-    // message is the only part worth showing.
-    final match = RegExp(r'message:\s*(.+?)(?:,\s*transient|\))').firstMatch(text);
-    return match?.group(1)?.trim() ?? text;
-  }
 
   @override
   void dispose() {

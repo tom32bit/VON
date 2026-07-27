@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../services/core_api.dart';
@@ -34,10 +35,13 @@ class DashboardScreen extends ConsumerWidget {
                 child: switch (projects) {
                   AsyncLoading() => const _ProjectGridSkeleton(),
                   AsyncError(:final error) => ListView(
-                      padding: const EdgeInsets.all(VonSpace.md),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: VonSpace.gutter,
+                        vertical: VonSpace.md,
+                      ),
                       children: [
                         NeuErrorBanner(
-                          message: 'Could not load your VONs: $error',
+                          message: 'Could not load your VONs: ${describeError(error)}',
                           onRetry: () => ref.invalidate(projectsProvider),
                         ),
                       ],
@@ -46,9 +50,9 @@ class DashboardScreen extends ConsumerWidget {
                     _EmptyDashboard(onCreate: () => _create(context, ref)),
                   AsyncData(value: final list) => GridView.builder(
                       padding: const EdgeInsets.fromLTRB(
-                        VonSpace.md,
+                        VonSpace.gutter,
                         VonSpace.sm,
-                        VonSpace.md,
+                        VonSpace.gutter,
                         // Room for the FAB to float clear of the last row.
                         96,
                       ),
@@ -195,9 +199,9 @@ class _DashboardHeader extends ConsumerWidget {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
+        VonSpace.gutter,
         VonSpace.md,
-        VonSpace.md,
-        VonSpace.md,
+        VonSpace.gutter,
         VonSpace.sm,
       ),
       child: Row(
@@ -427,7 +431,10 @@ class _ProjectGridSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     final columns = MediaQuery.sizeOf(context).width >= 720 ? 3 : 2;
     return GridView.builder(
-      padding: const EdgeInsets.all(VonSpace.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: VonSpace.gutter,
+        vertical: VonSpace.md,
+      ),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: columns,
         crossAxisSpacing: VonSpace.md,

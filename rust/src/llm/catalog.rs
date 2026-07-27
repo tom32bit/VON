@@ -184,6 +184,65 @@ pub fn cloud_catalog() -> Vec<CloudModel> {
             input_price: 0.1,
             output_price: 0.4,
         },
+        // Groq. Prices are per million tokens as published; the draw here is
+        // latency rather than cost — it is the fastest way to drive the agent
+        // loop from a phone on a poor connection.
+        CloudModel {
+            id: "llama-3.3-70b-versatile".into(),
+            name: "Llama 3.3 70B".into(),
+            provider: Provider::Groq.as_str().into(),
+            context_tokens: 128_000,
+            blurb: "Strong open model served very fast. Good default for Groq.".into(),
+            input_price: 0.59,
+            output_price: 0.79,
+        },
+        CloudModel {
+            id: "llama-3.1-8b-instant".into(),
+            name: "Llama 3.1 8B Instant".into(),
+            provider: Provider::Groq.as_str().into(),
+            context_tokens: 128_000,
+            blurb: "Very cheap and very fast; weaker on long tool-use chains.".into(),
+            input_price: 0.05,
+            output_price: 0.08,
+        },
+        CloudModel {
+            id: "qwen/qwen3-32b".into(),
+            name: "Qwen3 32B".into(),
+            provider: Provider::Groq.as_str().into(),
+            context_tokens: 131_000,
+            blurb: "Good at code for its size, with reliable tool calling.".into(),
+            input_price: 0.29,
+            output_price: 0.59,
+        },
+        // NVIDIA NIM. The free tier makes this the cheapest way to try a large
+        // model; the ids are the full `vendor/model` paths NIM expects.
+        CloudModel {
+            id: "meta/llama-3.3-70b-instruct".into(),
+            name: "Llama 3.3 70B Instruct".into(),
+            provider: Provider::Nvidia.as_str().into(),
+            context_tokens: 128_000,
+            blurb: "Well-rounded and free to try on NVIDIA's hosted tier.".into(),
+            input_price: 0.0,
+            output_price: 0.0,
+        },
+        CloudModel {
+            id: "qwen/qwen2.5-coder-32b-instruct".into(),
+            name: "Qwen2.5 Coder 32B".into(),
+            provider: Provider::Nvidia.as_str().into(),
+            context_tokens: 32_000,
+            blurb: "Tuned specifically for writing and fixing code.".into(),
+            input_price: 0.0,
+            output_price: 0.0,
+        },
+        CloudModel {
+            id: "deepseek-ai/deepseek-r1".into(),
+            name: "DeepSeek R1".into(),
+            provider: Provider::Nvidia.as_str().into(),
+            context_tokens: 128_000,
+            blurb: "Reasons at length before answering. Slow, but strong on hard bugs.".into(),
+            input_price: 0.0,
+            output_price: 0.0,
+        },
     ]
 }
 

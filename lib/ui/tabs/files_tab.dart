@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../services/core_api.dart';
@@ -30,9 +31,12 @@ class FilesTab extends ConsumerWidget {
           child: switch (tree) {
             AsyncLoading() => const Center(child: NeuPulsingDots()),
             AsyncError(:final error) => Padding(
-                padding: const EdgeInsets.all(VonSpace.md),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: VonSpace.gutter,
+                  vertical: VonSpace.md,
+                ),
                 child: NeuErrorBanner(
-                  message: '$error',
+                  message: describeError(error),
                   onRetry: () => ref.invalidate(fileTreeProvider(projectId)),
                 ),
               ),
@@ -52,9 +56,9 @@ class FilesTab extends ConsumerWidget {
                 },
                 child: ListView.builder(
                   padding: const EdgeInsets.fromLTRB(
-                    VonSpace.md,
+                    VonSpace.gutter,
                     VonSpace.sm,
-                    VonSpace.md,
+                    VonSpace.gutter,
                     VonSpace.xl,
                   ),
                   itemCount: entries.length,
@@ -100,7 +104,12 @@ class _QuotaBar extends StatelessWidget {
             : VonColors.accent;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(VonSpace.md, 0, VonSpace.md, VonSpace.sm),
+      padding: const EdgeInsets.fromLTRB(
+        VonSpace.gutter,
+        0,
+        VonSpace.gutter,
+        VonSpace.sm,
+      ),
       child: NeuSurface(
         depth: NeuDepth.concave,
         radius: VonRadius.small,
@@ -279,7 +288,7 @@ class _FileViewer extends ConsumerWidget {
               message: error.toString().contains('not valid UTF-8')
                   ? 'This is a binary file, so it cannot be shown as text. '
                       'Export the VON to open it elsewhere.'
-                  : '$error',
+                  : describeError(error),
             ),
           ),
         AsyncData(value: final text) => SingleChildScrollView(

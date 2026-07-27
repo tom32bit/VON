@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../services/core_api.dart';
@@ -118,7 +119,7 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
       onError: (Object e) {
         if (mounted && _error == null) {
           setState(() {
-            _error = e.toString();
+            _error = describeError(e);
             _busy = false;
           });
         }

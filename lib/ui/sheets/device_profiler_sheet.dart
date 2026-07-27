@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../services/core_api.dart';
@@ -76,7 +77,7 @@ class _DeviceProfilerSheetState extends ConsumerState<DeviceProfilerSheet>
           .read(deviceProfileProvider.notifier)
           .measure(durationMs: _durationMs);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = describeError(e));
     } finally {
       if (mounted) setState(() => _running = false);
     }

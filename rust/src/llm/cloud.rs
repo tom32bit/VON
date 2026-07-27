@@ -1,4 +1,4 @@
-//! Cloud providers: Anthropic, OpenAI, and Google Gemini.
+//! Cloud providers: Anthropic, OpenAI, Google Gemini, Groq and NVIDIA NIM.
 //!
 //! All three stream Server-Sent Events, but their transcript and tool-calling
 //! shapes differ enough that each gets its own request builder and event
@@ -32,6 +32,9 @@ use crate::state;
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
+/// Groq puts its OpenAI-compatible surface under `/openai/v1`.
+const GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
+const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 pub struct CloudEngine {
@@ -79,6 +82,9 @@ impl CloudEngine {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Completion> {
         let (url, body, headers) = match self.provider {
+            Provider::Local => {
+                return Err(VonError::Model("local provider is not a cloud engine".into()))
+            }
             Provider::Anthropic => (
                 ANTHROPIC_URL.to_string(),
                 anthropic_body(request),
@@ -86,14 +92,6 @@ impl CloudEngine {
                     ("x-api-key".to_string(), self.api_key.clone()),
                     ("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string()),
                 ],
-            ),
-            Provider::OpenAi => (
-                OPENAI_URL.to_string(),
-                openai_body(request),
-                vec![(
-                    "authorization".to_string(),
-                    format!("Bearer {}", self.api_key),
-                )],
             ),
             Provider::Gemini => (
                 format!(
@@ -105,9 +103,23 @@ impl CloudEngine {
                 // in a URL that could be logged.
                 vec![("x-goog-api-key".to_string(), self.api_key.clone())],
             ),
-            Provider::Local => {
-                return Err(VonError::Model("local provider is not a cloud engine".into()))
-            }
+            // OpenAI, Groq and NVIDIA NIM in one arm: the request bodies are
+            // identical and only the host changes. Written as a binding rather
+            // than a guard because a guarded arm never counts towards
+            // exhaustiveness, and this is the arm that has to cover the rest.
+            openai_like => (
+                match openai_like {
+                    Provider::Groq => GROQ_URL,
+                    Provider::Nvidia => NVIDIA_URL,
+                    _ => OPENAI_URL,
+                }
+                .to_string(),
+                openai_body(request),
+                vec![(
+                    "authorization".to_string(),
+                    format!("Bearer {}", self.api_key),
+                )],
+            ),
         };
 
         let mut builder = state::http()
@@ -168,9 +180,9 @@ impl CloudEngine {
                     };
                     match self.provider {
                         Provider::Anthropic => acc.push_anthropic(&value, on_delta)?,
-                        Provider::OpenAi => acc.push_openai(&value, on_delta),
                         Provider::Gemini => acc.push_gemini(&value, on_delta),
                         Provider::Local => unreachable!(),
+                        _ => acc.push_openai(&value, on_delta),
                     }
                 }
             }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../widgets/feedback.dart';
@@ -98,7 +99,7 @@ class _PreviewTabState extends ConsumerState<PreviewTab> {
                       child: Padding(
                         padding: const EdgeInsets.all(VonSpace.md),
                         child: NeuErrorBanner(
-                          message: '$error',
+                          message: describeError(error),
                           onRetry: notifier.start,
                         ),
                       ),

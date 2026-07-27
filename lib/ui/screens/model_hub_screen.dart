@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/errors.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../services/core_api.dart';
@@ -34,10 +35,15 @@ class ModelHubScreen extends ConsumerWidget {
         leadingWidth: 54,
       ),
       body: ListView(
+        // The top inset is not decorative. An extruded NeuSurface throws its
+        // light shadow up and to the left, so it paints outside its own box —
+        // and a ListView clips at the viewport edge, which sheared the flat top
+        // off the first card. Every other scroll view in the app already leaves
+        // this gap; this one was the outlier.
         padding: const EdgeInsets.fromLTRB(
-          VonSpace.md,
-          0,
-          VonSpace.md,
+          VonSpace.gutter,
+          VonSpace.sm,
+          VonSpace.gutter,
           VonSpace.xl,
         ),
         children: [
@@ -73,7 +79,7 @@ class ModelHubScreen extends ConsumerWidget {
                   ],
                 ),
               AsyncError(:final error) => NeuErrorBanner(
-                  message: '$error',
+                  message: describeError(error),
                   onRetry: () => ref.invalidate(offlineModelsProvider),
                 ),
               AsyncData(value: final models) => Column(
@@ -109,6 +115,8 @@ class ModelHubScreen extends ConsumerWidget {
             ('anthropic', 'Anthropic', 'sk-ant-…'),
             ('openai', 'OpenAI', 'sk-…'),
             ('gemini', 'Google Gemini', 'AIza…'),
+            ('groq', 'Groq', 'gsk_…'),
+            ('nvidia', 'NVIDIA NIM', 'nvapi-…'),
           ])
             Padding(
               padding: const EdgeInsets.only(bottom: VonSpace.md),
@@ -583,7 +591,7 @@ class _GitHubCardState extends ConsumerState<_GitHubCard> {
         ..invalidate(githubConnectedProvider)
         ..invalidate(githubAccountProvider);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = describeError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -753,7 +761,7 @@ class _ApiKeyCardState extends ConsumerState<_ApiKeyCard> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _status = e.toString();
+          _status = describeError(e);
           _statusOk = false;
         });
       }

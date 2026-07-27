@@ -93,9 +93,9 @@ class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen> {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(
-                VonSpace.md,
+                VonSpace.gutter,
                 VonSpace.xs,
-                VonSpace.md,
+                VonSpace.gutter,
                 VonSpace.sm,
               ),
               child: NeuPillTabs(
@@ -143,7 +143,7 @@ class _WorkspaceHeader extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(
         VonSpace.sm,
         VonSpace.sm,
-        VonSpace.md,
+        VonSpace.gutter,
         0,
       ),
       child: Row(

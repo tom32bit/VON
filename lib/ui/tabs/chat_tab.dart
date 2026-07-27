@@ -85,9 +85,9 @@ class _ChatTabState extends ConsumerState<ChatTab> {
             _ => ListView.builder(
                 controller: _scroll,
                 padding: const EdgeInsets.fromLTRB(
-                  VonSpace.md,
+                  VonSpace.gutter,
                   VonSpace.sm,
-                  VonSpace.md,
+                  VonSpace.gutter,
                   VonSpace.md,
                 ),
                 // Rebuilding only visible rows keeps scrolling smooth when the
@@ -100,9 +100,9 @@ class _ChatTabState extends ConsumerState<ChatTab> {
         if (chat.throttleMessage != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(
-              VonSpace.md,
+              VonSpace.gutter,
               0,
-              VonSpace.md,
+              VonSpace.gutter,
               VonSpace.sm,
             ),
             child: _ThrottleNotice(message: chat.throttleMessage!),
@@ -110,9 +110,9 @@ class _ChatTabState extends ConsumerState<ChatTab> {
         if (chat.error != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(
-              VonSpace.md,
+              VonSpace.gutter,
               0,
-              VonSpace.md,
+              VonSpace.gutter,
               VonSpace.sm,
             ),
             child: NeuErrorBanner(
@@ -386,9 +386,9 @@ class _Composer extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
-        VonSpace.md,
+        VonSpace.gutter,
         0,
-        VonSpace.md,
+        VonSpace.gutter,
         VonSpace.md + MediaQuery.viewPaddingOf(context).bottom * 0.2,
       ),
       child: Column(

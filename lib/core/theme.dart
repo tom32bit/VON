@@ -42,6 +42,14 @@ abstract final class VonSpace {
   static const md = 16.0;
   static const lg = 24.0;
   static const xl = 32.0;
+
+  /// Distance from content to the screen edge.
+  ///
+  /// Wider than [md], which is what screens used to use, for two reasons. A
+  /// neomorphic card throws its shadow a few pixels past its own box, so an
+  /// even 16 reads tighter than it measures. And sheets were already at [lg],
+  /// which made every screen look cramped next to them by comparison.
+  static const gutter = 20.0;
 }
 
 /// Motion constants from Design.md §7. Presses are linear-feeling easing, not

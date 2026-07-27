@@ -39,21 +39,59 @@ pub struct LocalEngine {
 }
 
 impl LocalEngine {
-    pub fn new() -> Result<Self> {
-        let selected = crate::db::get_setting("local_model_id")?
-            .ok_or_else(|| VonError::Model("no local model selected in the Model Hub".into()))?;
-        let row = crate::db::get_local_model(&selected)?
-            .ok_or_else(|| VonError::Model(format!("local model '{selected}' is not registered")))?;
+    /// Resolves the weights a project asked for.
+    ///
+    /// A project carries its own `model_id`, chosen with Switch Model in the
+    /// workspace. That is deliberately independent of the Model Hub's default,
+    /// which only decides what a *new* VON starts with — so this must not read
+    /// the global setting when the project has already said what it wants.
+    /// Doing exactly that was a bug: picking a model for a VON without also
+    /// making it the default failed with "no local model selected in the Model
+    /// Hub", pointing at a screen where nothing was wrong.
+    ///
+    /// The setting is still the fallback, for a project created before it had a
+    /// model id or one whose choice has since been deleted.
+    pub fn for_model(model_id: &str) -> Result<Self> {
+        let requested = model_id.trim();
+        let row = match requested {
+            "" => None,
+            id => crate::db::get_local_model(id)?,
+        };
+
+        let row = match row {
+            Some(row) => row,
+            None => {
+                let fallback = crate::db::get_setting("local_model_id")?.ok_or_else(|| {
+                    if requested.is_empty() {
+                        VonError::Model(
+                            "this VON has no on-device model yet. Pick one with Switch Model, or \
+                             download one in the Model Hub."
+                                .into(),
+                        )
+                    } else {
+                        VonError::Model(format!(
+                            "'{requested}' is not in the model list any more. Pick another with \
+                             Switch Model."
+                        ))
+                    }
+                })?;
+                crate::db::get_local_model(&fallback)?.ok_or_else(|| {
+                    VonError::Model(format!("local model '{fallback}' is not registered"))
+                })?
+            }
+        };
+
         if !row.downloaded || row.file_path.is_empty() {
             return Err(VonError::Model(format!(
-                "'{}' has not finished downloading",
+                "'{}' has not finished downloading. Open the Model Hub to finish it.",
                 row.name
             )));
         }
         let path = PathBuf::from(&row.file_path);
         if !path.is_file() {
             return Err(VonError::NotFound(format!(
-                "model file for '{}' is missing; re-download it",
+                "the weights for '{}' are missing from storage; re-download them in the Model \
+                 Hub",
                 row.name
             )));
         }

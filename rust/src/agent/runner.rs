@@ -118,7 +118,7 @@ fn run_inner(options: &RunOptions, emit: &mut dyn FnMut(AgentEvent)) -> Result<(
     let cancelled = || cancel.load(Ordering::SeqCst);
 
     let provider = llm::Provider::parse(&project.provider)?;
-    let engine = llm::engine_for(provider)?;
+    let engine = llm::engine_for(provider, &project.model_id)?;
     let tool_specs = tools::specs(&project.kind);
 
     // Restore the transcript so the agent resumes with full context (Process C).
