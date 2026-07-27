@@ -157,6 +157,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   StreamSubscription<AgentEventDto>? _subscription;
 
+  /// Assistant prose the core has actually written to SQLite for the run in
+  /// flight, joined across steps. Held here rather than derived from the turn
+  /// because the turn's text also holds unreconciled streamed deltas.
+  String _persisted = '';
+
   CoreApi get _api => _ref.read(coreApiProvider);
 
   /// Restores the conversation from SQLite (Process C: Resumption).
@@ -295,6 +300,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       phaseDetail: 'Reading the request',
     );
 
+    _persisted = '';
     _subscription = _api
         .runAgent(projectId: projectId, message: text)
         .listen(_onEvent, onError: _onStreamError, onDone: _finish);
@@ -354,8 +360,24 @@ class ChatNotifier extends StateNotifier<ChatState> {
         state = state.copyWith(throttleMessage: event.detail);
 
       case 'message_saved':
-        // Rust owns sequence numbers; nothing to do visually, but this is the
-        // signal that the turn is durable.
+        // Rust owns sequence numbers, and this is the signal that the turn is
+        // durable. It is also the authoritative text: the streamed deltas are
+        // raw model output, which for a local model carries the tool-call block
+        // and any leaked turn markers that Rust strips before persisting.
+        //
+        // One agent turn produces one of these per step, each holding only that
+        // step's prose, so they accumulate — replacing outright would drop
+        // everything the agent said before it reached for a tool. Rewriting
+        // even when the step saved nothing is the point: that is exactly the
+        // tool-only step whose raw JSON is sitting in the bubble.
+        if (event.role == 'assistant') {
+          if (event.text.trim().isNotEmpty) {
+            _persisted = _persisted.isEmpty
+                ? event.text
+                : '$_persisted\n\n${event.text}';
+          }
+          _mutateActive((turn) => turn.copyWith(text: _persisted));
+        }
         break;
 
       case 'done':

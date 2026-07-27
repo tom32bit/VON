@@ -312,38 +312,45 @@ class _OfflineModelCard extends ConsumerWidget {
               ),
             ],
           ),
-          if (model.downloaded && !model.isDefault) ...[
+          // Delete is available whenever the weights are on disk. It used to be
+          // gated on `!isDefault`, which meant the moment you selected a model
+          // it became impossible to remove — the one you are most likely to
+          // want to reclaim gigabytes from.
+          if (model.downloaded) ...[
             const SizedBox(height: VonSpace.md),
             Row(
               children: [
-                Expanded(
-                  child: NeuButton(
-                    label: blocked ? 'Not enough memory' : 'Use for new VONs',
-                    compact: true,
-                    expand: true,
-                    onPressed: blocked
-                        ? null
-                        : () async {
-                            await ref
-                                .read(coreApiProvider)
-                                .setDefaultLocalModel(model.id);
-                            ref.invalidate(offlineModelsProvider);
-                          },
+                if (!model.isDefault)
+                  Expanded(
+                    child: NeuButton(
+                      label: blocked ? 'Not enough memory' : 'Use for new VONs',
+                      compact: true,
+                      expand: true,
+                      onPressed: blocked
+                          ? null
+                          : () async {
+                              await ref
+                                  .read(coreApiProvider)
+                                  .setDefaultLocalModel(model.id);
+                              ref.invalidate(offlineModelsProvider);
+                            },
+                    ),
+                  )
+                else
+                  Expanded(
+                    child: Text(
+                      'Default for new VONs',
+                      style: VonText.caption.copyWith(color: VonColors.accent),
+                    ),
                   ),
-                ),
                 const SizedBox(width: VonSpace.sm),
                 NeuIconButton(
                   icon: Icons.delete_outline_rounded,
                   size: 38,
                   iconSize: 17,
                   tone: VonColors.textSecondary,
-                  tooltip: 'Delete weights',
-                  onPressed: () async {
-                    await ref
-                        .read(coreApiProvider)
-                        .deleteDownloadedModel(model.id);
-                    ref.invalidate(offlineModelsProvider);
-                  },
+                  tooltip: 'Delete the downloaded weights',
+                  onPressed: () => _confirmDelete(context, ref, model),
                 ),
               ],
             ),
@@ -351,6 +358,58 @@ class _OfflineModelCard extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  /// Weights are gigabytes and the download is slow, so deletion asks first —
+  /// the same courtesy the dashboard extends before deleting a VON.
+  static Future<void> _confirmDelete(
+    BuildContext context,
+    WidgetRef ref,
+    OfflineModelDto model,
+  ) async {
+    final confirmed = await showNeuSheet<bool>(
+      context: context,
+      builder: (sheetContext) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Delete ${model.name}?', style: VonText.title),
+          const SizedBox(height: VonSpace.sm),
+          Text(
+            'This frees ${_gb(model.sizeBytes.toInt())} of storage. '
+            '${model.isDefault ? 'VON will fall back to another downloaded model, or to a cloud provider if there is none. ' : ''}'
+            'You can download it again later over the same connection it came from.',
+            style: VonText.secondary,
+          ),
+          const SizedBox(height: VonSpace.lg),
+          Row(
+            children: [
+              Expanded(
+                child: NeuButton(
+                  label: 'Keep',
+                  tone: VonColors.textSecondary,
+                  expand: true,
+                  onPressed: () => Navigator.of(sheetContext).pop(false),
+                ),
+              ),
+              const SizedBox(width: VonSpace.md),
+              Expanded(
+                child: NeuButton(
+                  label: 'Delete',
+                  tone: VonColors.danger,
+                  expand: true,
+                  onPressed: () => Navigator.of(sheetContext).pop(true),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    if (confirmed ?? false) {
+      await ref.read(coreApiProvider).deleteDownloadedModel(model.id);
+      ref.invalidate(offlineModelsProvider);
+    }
   }
 
   static String _gb(int bytes) =>

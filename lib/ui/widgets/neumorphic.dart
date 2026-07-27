@@ -30,6 +30,7 @@ class NeuSurface extends StatelessWidget {
     this.color,
     this.glow = false,
     this.borderColor,
+    this.borderWidth = 2,
     this.intensity = 1.0,
   });
 
@@ -46,9 +47,12 @@ class NeuSurface extends StatelessWidget {
   /// "Download Project" button.
   final bool glow;
 
-  /// Draws a 2px accent outline. Design.md uses this for the selected model
-  /// card, which stays extruded but gains a border.
+  /// Draws an outline. Design.md uses this for the selected model card, which
+  /// stays extruded but gains a border.
   final Color? borderColor;
+
+  /// Width of that outline. Cards use 2; an input's resting hairline uses 1.
+  final double borderWidth;
 
   /// Scales shadow offset and blur. Small controls need shallower shadows or
   /// they read as smudges rather than edges.
@@ -60,7 +64,7 @@ class NeuSurface extends StatelessWidget {
       smoothness: 0.6, // Apple's superellipse constant.
       borderRadius: BorderRadius.circular(radius),
       side: borderColor != null
-          ? BorderSide(color: borderColor!, width: 2)
+          ? BorderSide(color: borderColor!, width: borderWidth)
           : BorderSide.none,
     );
 
@@ -423,8 +427,17 @@ class _NeuFieldState extends State<NeuField> {
     return NeuSurface(
       depth: NeuDepth.concave,
       radius: VonRadius.medium,
-      // Focus is a 1px accent ring plus the ambient glow, per Design.md §5.3.
-      borderColor: _focused ? VonColors.accent.withOpacity(0.9) : null,
+      // Design.md §5.3 gives an input only an inner shadow when unfocused. On a
+      // real OLED panel that reads as nothing at all — the field was invisible
+      // except for its placeholder, so there was no way to tell where to tap.
+      // An always-present hairline restores the boundary. It has to clear the
+      // background by more than a shadow tint does to survive at low screen
+      // brightness, so it comes off the text ramp rather than the shadow ramp,
+      // and brightens to the accent on focus rather than appearing from nowhere.
+      borderColor: _focused
+          ? VonColors.accent.withOpacity(0.9)
+          : VonColors.textSecondary.withOpacity(0.35),
+      borderWidth: _focused ? 2 : 1,
       glow: _focused,
       padding: const EdgeInsets.symmetric(
         horizontal: VonSpace.md,

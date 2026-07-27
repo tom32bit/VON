@@ -403,7 +403,8 @@ pub fn delete_model(model_id: &str) -> Result<()> {
 
     // Drop it from memory first — deleting the file under a live mmap is how
     // you get a SIGBUS mid-generation.
-    if db::get_setting("local_model_id")?.as_deref() == Some(model_id) {
+    let was_default = db::get_setting("local_model_id")?.as_deref() == Some(model_id);
+    if was_default {
         crate::llm::local::release_model();
     }
     for path in [
@@ -418,7 +419,22 @@ pub fn delete_model(model_id: &str) -> Result<()> {
     let mut updated = row;
     updated.file_path = String::new();
     updated.downloaded = false;
-    db::upsert_local_model(&updated)
+    db::upsert_local_model(&updated)?;
+
+    // The setting still names the model we just erased. Leaving it there makes
+    // every later run fail with "has not finished downloading", so hand the
+    // default to another set of weights that are actually on disk — or clear it
+    // and let the Model Hub say there is nothing selected.
+    if was_default {
+        match db::list_local_models()?
+            .into_iter()
+            .find(|m| m.downloaded && !m.file_path.is_empty())
+        {
+            Some(next) => db::set_setting("local_model_id", &next.id)?,
+            None => db::clear_setting("local_model_id")?,
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

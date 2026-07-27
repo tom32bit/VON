@@ -431,6 +431,15 @@ pub fn set_setting(k: &str, v: &str) -> Result<()> {
     })
 }
 
+/// Removes a key entirely, so `get_setting` reports "never set" rather than
+/// "set to empty" — the two mean different things for `local_model_id`.
+pub fn clear_setting(k: &str) -> Result<()> {
+    with_db(|c| {
+        c.execute("DELETE FROM settings WHERE k = ?1", params![k])?;
+        Ok(())
+    })
+}
+
 pub fn get_setting(k: &str) -> Result<Option<String>> {
     with_db(|c| {
         Ok(c.query_row("SELECT v FROM settings WHERE k = ?1", params![k], |r| {
