@@ -37,6 +37,16 @@ const GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
 const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
+/// How long the reader waits on one poll before checking for cancellation.
+const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long a stream may send nothing at all before it is treated as hung.
+///
+/// Generous on purpose: a thinking model legitimately produces no bytes while
+/// it reasons, and cutting that short would break the models most worth using.
+/// Three minutes is well past any real think and well short of forever.
+const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(180);
+
 pub struct CloudEngine {
     provider: Provider,
     api_key: String,
@@ -75,13 +85,14 @@ impl Engine for CloudEngine {
 }
 
 impl CloudEngine {
-    async fn stream(
+    /// URL, body and headers for one attempt.
+    #[allow(clippy::type_complexity)]
+    fn request_shape(
         &self,
         request: &GenerateRequest,
-        on_delta: &mut dyn FnMut(Delta),
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<Completion> {
-        let (url, body, headers) = match self.provider {
+        include_thoughts: bool,
+    ) -> Result<(String, Value, Vec<(String, String)>)> {
+        Ok(match self.provider {
             Provider::Local => {
                 return Err(VonError::Model("local provider is not a cloud engine".into()))
             }
@@ -98,7 +109,7 @@ impl CloudEngine {
                     "{GEMINI_BASE}/{}:streamGenerateContent?alt=sse",
                     request.model
                 ),
-                gemini_body(request),
+                gemini_body(request, include_thoughts),
                 // Header rather than a query parameter, so the key never lands
                 // in a URL that could be logged.
                 vec![("x-goog-api-key".to_string(), self.api_key.clone())],
@@ -120,27 +131,55 @@ impl CloudEngine {
                     format!("Bearer {}", self.api_key),
                 )],
             ),
-        };
+        })
+    }
 
-        let mut builder = state::http()
-            .post(&url)
-            .header("content-type", "application/json");
-        for (key, value) in headers {
-            builder = builder.header(key, value);
-        }
+    async fn stream(
+        &self,
+        request: &GenerateRequest,
+        on_delta: &mut dyn FnMut(Delta),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Completion> {
+        // Looped because Gemini may need a second attempt: `thinkingConfig` is
+        // rejected by models that do not think, and the only way to find out is
+        // to be told.
+        let mut include_thoughts = self.provider == Provider::Gemini;
+        let response = loop {
+            let (url, body, headers) = self.request_shape(request, include_thoughts)?;
 
-        let response = builder.json(&body).send().await?;
-        let status = response.status();
-        if !status.is_success() {
+            let mut builder = state::http()
+                .post(&url)
+                .header("content-type", "application/json");
+            for (key, value) in headers {
+                builder = builder.header(key, value);
+            }
+
+            let response = builder.json(&body).send().await?;
+            let status = response.status();
+            if status.is_success() {
+                break response;
+            }
+
             let text = response.text().await.unwrap_or_default();
+
+            // The model does not do thinking, so it will not be asked again.
+            // Retried rather than reported because the field is ours, not the
+            // user's — they did not opt into it and should not have to know.
+            if include_thoughts
+                && status.as_u16() == 400
+                && text.to_lowercase().contains("thinking")
+            {
+                include_thoughts = false;
+                continue;
+            }
+
             // A 404 from a chat endpoint is never a missing URL — the URL is a
             // constant. It means the model is not reachable on this account,
             // which NVIDIA reports as an internal function id the user has no
             // way to interpret. Say what it actually means and what to do.
             if status.as_u16() == 404 {
                 return Err(VonError::NotFound(format!(
-                    "'{}' is listed by {} but is not available on your account. Pick another \
-                     model — providers list far more than any one key can run.",
+                    "'{}' is listed by {} but is not available on your account. Pick another                      model — providers list far more than any one key can run.",
                     request.model,
                     self.provider.display_name()
                 )));
@@ -150,17 +189,43 @@ impl CloudEngine {
                 status: status.as_u16(),
                 body: summarise_error(&text),
             });
-        }
+        };
 
         let mut acc = Accumulator::default();
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::<u8>::new();
+        let mut idle = std::time::Duration::ZERO;
 
-        'outer: while let Some(chunk) = stream.next().await {
-            if cancelled() {
-                acc.stop_reason = Some(StopReason::Cancelled);
-                break;
-            }
+        'outer: loop {
+            // Polled in short slices rather than awaited outright, for two
+            // reasons. Stop has to take effect while the model is thinking, not
+            // whenever it next decides to speak — a thinking model can send
+            // nothing for minutes, and a Stop button that ignores you for that
+            // long is not a Stop button. And a connection that has gone quiet
+            // without closing is otherwise indistinguishable from one that is
+            // working: the loop simply waits forever, which is what "stuck on
+            // PLANNING for six minutes" looks like from the outside.
+            let chunk = loop {
+                if cancelled() {
+                    acc.stop_reason = Some(StopReason::Cancelled);
+                    break 'outer;
+                }
+                match tokio::time::timeout(STREAM_POLL, stream.next()).await {
+                    Ok(Some(chunk)) => break chunk,
+                    Ok(None) => break 'outer,
+                    Err(_) => {
+                        idle += STREAM_POLL;
+                        if idle >= STREAM_STALL {
+                            return Err(VonError::Network(format!(
+                                "{} accepted the request but sent nothing for {} seconds. The                                  connection is open and idle rather than slow — try again, or                                  switch this VON to another model.",
+                                self.provider.display_name(),
+                                STREAM_STALL.as_secs()
+                            )));
+                        }
+                    }
+                }
+            };
+            idle = std::time::Duration::ZERO;
             buffer.extend_from_slice(&chunk?);
 
             // SSE frames are separated by a blank line. Process every complete
@@ -766,7 +831,7 @@ fn openai_body(request: &GenerateRequest, provider: Provider) -> Value {
     body
 }
 
-fn gemini_body(request: &GenerateRequest) -> Value {
+fn gemini_body(request: &GenerateRequest, include_thoughts: bool) -> Value {
     let mut contents = Vec::new();
     for message in &request.messages {
         match message.role {
@@ -826,6 +891,20 @@ fn gemini_body(request: &GenerateRequest) -> Value {
         "contents": contents,
         "generationConfig": { "maxOutputTokens": request.max_tokens },
     });
+
+    // Ask for the reasoning summary.
+    //
+    // Gemini's thinking models produce no output at all while they think, and
+    // they do not stream the thinking unless asked. The result is a request
+    // that looks hung for minutes and then answers all at once — which is
+    // exactly how a six-minute step reads to someone watching a spinner. With
+    // this on, the thought panel fills while the model works, so a long think
+    // is visibly a think.
+    //
+    // Older models reject the field, so a 400 that mentions it retries without.
+    if include_thoughts {
+        body["generationConfig"]["thinkingConfig"] = json!({ "includeThoughts": true });
+    }
     if !request.system.is_empty() {
         body["systemInstruction"] = json!({ "parts": [{ "text": request.system }] });
     }
@@ -1050,10 +1129,10 @@ mod tests {
         assert_eq!(done.tool_calls[0].thought_signature, "Cs4BAVSoXO8-signature");
 
         // And it goes back out on the model turn.
-        let replayed = gemini_body(&request(vec![ChatMessage::assistant(
-            "",
-            done.tool_calls.clone(),
-        )]));
+        let replayed = gemini_body(
+            &request(vec![ChatMessage::assistant("", done.tool_calls.clone())]),
+            true,
+        );
         let part = &replayed["contents"][0]["parts"][0];
         assert_eq!(part["thoughtSignature"], json!("Cs4BAVSoXO8-signature"));
         assert_eq!(part["functionCall"]["name"], json!("list_files"));
@@ -1069,9 +1148,32 @@ mod tests {
             arguments: json!({}),
             thought_signature: String::new(),
         };
-        let body = gemini_body(&request(vec![ChatMessage::assistant("", vec![call])]));
+        let body = gemini_body(&request(vec![ChatMessage::assistant("", vec![call])]), true);
         let part = &body["contents"][0]["parts"][0];
         assert!(part.get("thoughtSignature").is_none());
+    }
+
+    /// Without this, a thinking model produces no bytes at all while it
+    /// reasons and then answers at once — which is indistinguishable from a
+    /// hung request for however long the thinking takes.
+    #[test]
+    fn gemini_is_asked_for_its_reasoning() {
+        let req = request(vec![ChatMessage::user("hi")]);
+
+        let thinking = gemini_body(&req, true);
+        assert_eq!(
+            thinking["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            json!(true)
+        );
+
+        // And the fallback for a model that rejects the field sends no trace
+        // of it, rather than sending it set to false.
+        let plain = gemini_body(&req, false);
+        assert!(plain["generationConfig"].get("thinkingConfig").is_none());
+        assert_eq!(
+            plain["generationConfig"]["maxOutputTokens"],
+            json!(req.max_tokens)
+        );
     }
 
     #[test]
