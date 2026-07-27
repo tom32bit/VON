@@ -53,6 +53,10 @@ impl ThermalState {
     }
 
     /// Maps `ATHERMAL_STATUS_*` (0..=6) onto our bands.
+    ///
+    /// Only reachable from the Android thermal implementation; dead on a
+    /// host build, where the tests still exercise `from_celsius`.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     fn from_ndk_status(status: i32) -> Self {
         match status {
             // NONE, LIGHT

@@ -92,6 +92,24 @@ impl Sandbox {
         // Layer 1: lexical. Normalise separators first so a Windows-style path
         // in a test can't sneak past a POSIX-only check.
         let normalised = rel.replace('\\', "/");
+
+        // A Windows drive prefix parses as `Component::Prefix` only *on*
+        // Windows. On Linux — which is what Android is — `C:\Windows` becomes
+        // the relative path `C:/Windows` and would be accepted, silently
+        // creating a directory literally named `C:` inside the VON. That stays
+        // contained, so it is not an escape, but it is surprising and the rule
+        // should not depend on which OS the code happens to be running on.
+        // Reject drive letters everywhere so the behaviour is identical on the
+        // device and on any developer's machine.
+        if let Some(first) = normalised.split('/').next() {
+            let bytes = first.as_bytes();
+            if bytes.len() == 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+                return Err(VonError::PermissionDenied(format!(
+                    "'{rel}' is absolute; use a path relative to the VON root"
+                )));
+            }
+        }
+
         let candidate = Path::new(&normalised);
 
         let mut safe = PathBuf::new();
@@ -107,7 +125,7 @@ impl Sandbox {
                 }
                 Component::RootDir | Component::Prefix(_) => {
                     return Err(VonError::PermissionDenied(format!(
-                        "'{rel}' is absolute; use a path relative to the project root"
+                        "'{rel}' is absolute; use a path relative to the VON root"
                     )))
                 }
             }

@@ -13,8 +13,6 @@
 //! Both are gated by the governor: a thermally throttled device does not get to
 //! spin up a compile-and-run cycle.
 
-use std::time::Instant;
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, VonError};
@@ -141,6 +139,7 @@ fn preflight() -> Result<()> {
 #[cfg(feature = "wasm-exec")]
 mod wasm_backend {
     use super::*;
+    use std::time::{Duration, Instant};
     use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
     use wasmtime_wasi::pipe::MemoryOutputPipe;
     use wasmtime_wasi::preview1::{self, WasiP1Ctx};
@@ -308,6 +307,7 @@ mod wasm_backend {
 #[cfg(feature = "python-exec")]
 mod python_backend {
     use super::*;
+    use std::time::{Duration, Instant};
     use std::sync::mpsc;
 
     /// Prelude injected before the agent's code.
