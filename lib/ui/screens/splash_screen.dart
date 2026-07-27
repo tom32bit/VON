@@ -130,25 +130,33 @@ class _VonMarkState extends State<_VonMark>
     return NeuSurface(
       depth: NeuDepth.concave,
       radius: VonRadius.extraLarge,
-      width: 108,
-      height: 108,
+      width: 132,
+      height: 132,
       child: Center(
         child: AnimatedBuilder(
           animation: _controller,
-          builder: (context, child) => NeuSurface(
-            radius: VonRadius.large,
-            width: 56,
-            height: 56,
-            glow: true,
-            intensity: 0.6 + 0.4 * _controller.value,
-            child: child!,
-          ),
-          child: const Center(
-            child: Icon(
-              Icons.hexagon_outlined,
-              size: 26,
-              color: VonColors.accent,
+          // The logo already carries its own glow, so the breathing is done
+          // with a real drop shadow behind it rather than a second painted
+          // halo, which would double up and muddy the edge.
+          builder: (context, child) => DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: VonColors.accent
+                      .withOpacity(0.10 + 0.22 * _controller.value),
+                  blurRadius: 26 + 14 * _controller.value,
+                  spreadRadius: 1,
+                ),
+              ],
             ),
+            child: child,
+          ),
+          child: Image.asset(
+            'assets/von_logo.png',
+            width: 96,
+            height: 96,
+            filterQuality: FilterQuality.medium,
           ),
         ),
       ),
@@ -172,8 +180,15 @@ class _StartupFailure extends StatelessWidget {
         ),
         const SizedBox(height: VonSpace.md),
         Text(
-          'This usually means the native library for this device architecture '
-          'is missing from the build.',
+          // The original wording here blamed a missing architecture, which sent
+          // the first real failure down the wrong path: libvon.so was present
+          // and correct, but a library *it* depends on was not packaged.
+          message.contains('not found: needed by')
+              ? 'The core loaded but one of its own dependencies is missing '
+                  'from the APK. This is a packaging bug, not a problem with '
+                  'your device.'
+              : 'This usually means the native library for this device\'s CPU '
+                  'architecture is missing from the build.',
           style: VonText.caption,
           textAlign: TextAlign.center,
         ),

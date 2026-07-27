@@ -192,13 +192,37 @@ jobs:
           echo "::warning::Full build failed — falling back to a cloud-only core."
           ./tool/build_rust.sh --release --abi arm64 --cloud-only
 
-      - name: Confirm the native library exists
+      # An APK that installs and then dies on the first FFI call is the worst
+      # failure mode here: CI is green, the store page works, and the app is
+      # bricked. So rather than only checking the file exists, walk libvon.so's
+      # DT_NEEDED entries and prove every one of them resolves — either from a
+      # library we ship or from one Android actually provides. This is exactly
+      # the check that would have caught the missing libc++_shared.so.
+      - name: Verify every native dependency resolves
         run: |
-          so="android/app/src/main/jniLibs/arm64-v8a/libvon.so"
-          test -f "$so" || {
-            echo "::error::$so is missing — the app would install then crash on first use"
-            exit 1
-          }
+          dir="android/app/src/main/jniLibs/arm64-v8a"
+          so="$dir/libvon.so"
+          test -f "$so" || { echo "::error::$so is missing"; exit 1; }
+
+          # Present on every supported Android device (NDK "stable APIs").
+          provided="libc.so libm.so libdl.so liblog.so libz.so libandroid.so
+                    libEGL.so libGLESv2.so libGLESv3.so libOpenSLES.so libaaudio.so
+                    libjnigraphics.so libmediandk.so libnativewindow.so libvulkan.so
+                    libcamera2ndk.so libsync.so libstdc++.so"
+
+          missing=0
+          for need in $(readelf -d "$so" | awk -F'[][]' '/NEEDED/{print $2}'); do
+            if [ -f "$dir/$need" ]; then
+              echo "  $need — bundled"
+            elif echo "$provided" | tr ' ' '\n' | grep -qx "$need"; then
+              echo "  $need — provided by Android"
+            else
+              echo "::error::libvon.so needs '$need', which is neither bundled in $dir nor provided by Android. The app would install and then fail at dlopen."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
           echo "VARIANT=$(cat android/app/src/main/jniLibs/.variant)" >> "$GITHUB_ENV"
           echo "libvon.so $(du -h "$so" | cut -f1) — $(cat android/app/src/main/jniLibs/.variant)"
 

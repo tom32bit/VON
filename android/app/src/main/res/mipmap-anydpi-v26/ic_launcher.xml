@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Adaptive icon only — minSdk is 26, so every device this ships to supports it
-  and no per-density PNG raster is needed.
+  Adaptive icon only — minSdk is 26, so every device this ships to supports it.
+
+  The foreground is generated from VON LOGO.png by tool/gen_icons.py, sized so
+  the mark's outermost points sit inside the guaranteed-visible 72dp circle;
+  a launcher using a circular mask must not clip the V's tips.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <!-- Themed icons are tinted by the launcher, so this one is a flat
+         silhouette rather than the glowing artwork. -->
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

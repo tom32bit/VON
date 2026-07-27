@@ -70,6 +70,13 @@ declare -A TARGET_FOR=(
   ["armeabi-v7a"]="armv7-linux-androideabi"
   ["x86_64"]="x86_64-linux-android"
 )
+# The NDK sysroot uses a slightly different directory name for 32-bit ARM than
+# the Rust target triple does.
+declare -A SYSROOT_DIR_FOR=(
+  ["arm64-v8a"]="aarch64-linux-android"
+  ["armeabi-v7a"]="arm-linux-androideabi"
+  ["x86_64"]="x86_64-linux-android"
+)
 for abi in "${ABIS[@]}"; do
   rustup target add "${TARGET_FOR[$abi]}" >/dev/null 2>&1 || true
 done
@@ -100,6 +107,37 @@ fi
 # one silently raises the effective minimum.
 cargo ndk "${NDK_ARGS[@]}" --platform 26 -o "$JNI_DIR" build \
   "${PROFILE_ARGS[@]}" "${FEATURE_ARGS[@]}"
+
+# ---- bundle the shared C++ runtime ----------------------------------------
+#
+# llama.cpp is C++, so libvon.so links against libc++_shared.so. Android does
+# NOT ship that library — every app that needs it must package its own copy, or
+# the app installs fine and then dies on first FFI call with:
+#
+#   dlopen failed: library "libc++_shared.so" not found: needed by libvon.so
+#
+# The cloud-only variant has no C++ in it and does not need this, but copying it
+# unconditionally keeps the two variants' packaging identical and costs ~1MB.
+NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_NDK_ROOT}"
+case "$(uname -s)" in
+  Linux)                  HOST_TAG="linux-x86_64" ;;
+  Darwin)                 HOST_TAG="darwin-x86_64" ;;
+  MINGW*|MSYS*|CYGWIN*)   HOST_TAG="windows-x86_64" ;;
+  *)                      HOST_TAG="linux-x86_64" ;;
+esac
+SYSROOT="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG/sysroot/usr/lib"
+
+for abi in "${ABIS[@]}"; do
+  src="$SYSROOT/${SYSROOT_DIR_FOR[$abi]}/libc++_shared.so"
+  if [[ ! -f "$src" ]]; then
+    echo "error: could not find libc++_shared.so for $abi at:" >&2
+    echo "       $src" >&2
+    echo "       Without it the app installs but crashes on first use." >&2
+    exit 1
+  fi
+  mkdir -p "$JNI_DIR/$abi"
+  cp "$src" "$JNI_DIR/$abi/libc++_shared.so"
+done
 
 # Record the variant so the packaging step can name the APK accurately.
 echo "$VARIANT" > "$JNI_DIR/.variant"

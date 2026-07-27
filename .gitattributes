@@ -14,6 +14,7 @@
 
 # Never touched by normalisation.
 *.png     binary
+*.PNG     binary
 *.jpg     binary
 *.jks     binary
 *.keystore binary
