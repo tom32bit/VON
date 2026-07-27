@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, VonError};
 use crate::governor;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::sandbox::Sandbox;
 
 /// Ceiling on guest linear memory (SWE §3.4 specifies 128MB).
@@ -25,12 +27,18 @@ pub const MAX_WASM_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// The most any single execution may be given, on a device with room to spare.
 ///
-/// Two minutes rather than the old flat thirty seconds. Thirty was chosen to
-/// protect the battery, which is the right instinct and the wrong mechanism —
-/// it charged a cold, plugged-in flagship the same as a hot budget phone, and
-/// killed legitimate work on both. The governor already knows the difference,
-/// so the ceiling asks it.
-pub const MAX_TIMEOUT_MS: u64 = 120_000;
+/// A minute rather than the old flat thirty seconds. Thirty was chosen to
+/// protect the battery, which is the right instinct through the wrong
+/// mechanism — it charged a cold, plugged-in flagship the same as a hot budget
+/// phone, and killed legitimate work on both. The governor knows the
+/// difference, so the ceiling asks it.
+///
+/// Not the two minutes this first shipped as. A program that overruns cannot be
+/// killed — the interpreter thread is detached and runs to completion — so the
+/// budget is also how long a runaway keeps a phone's memory. Two minutes of
+/// that, three prompts in a row, is an out-of-memory kill, which the user
+/// experiences as the app vanishing.
+pub const MAX_TIMEOUT_MS: u64 = 60_000;
 
 /// The ceiling when the device is warm, low on memory, or nearly flat.
 pub const THROTTLED_TIMEOUT_MS: u64 = 20_000;
@@ -44,6 +52,35 @@ const _: () = assert!(DEFAULT_TIMEOUT_MS <= THROTTLED_TIMEOUT_MS);
 /// Captured output is truncated to this before going into the model's context —
 /// a runaway print loop must not blow the context window.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+
+/// Interpreter threads still running, including ones already given up on.
+///
+/// A Python execution that overruns its budget cannot be killed: the thread is
+/// detached and left to finish, because tearing down the VM mid-allocation is
+/// worse than waiting. That is survivable once and compounding thereafter —
+/// three overruns in a row is three interpreters competing for the memory of a
+/// phone, and Android resolves that by killing the app.
+///
+/// So a new execution refuses to start while an old one is still going, and
+/// says so in a way the agent can act on.
+static LIVE_INTERPRETERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Guard that keeps the count honest across every exit path, including a panic
+/// inside the interpreter.
+struct InterpreterSlot;
+
+impl InterpreterSlot {
+    fn take() -> Self {
+        LIVE_INTERPRETERS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for InterpreterSlot {
+    fn drop(&mut self) {
+        LIVE_INTERPRETERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecOutcome {
@@ -158,6 +195,14 @@ fn timeout_ceiling() -> u64 {
 
 /// Shared preflight: refuse to start work the device cannot afford.
 fn preflight() -> Result<()> {
+    if LIVE_INTERPRETERS.load(Ordering::SeqCst) > 0 {
+        return Err(VonError::Throttled(
+            "a previous run is still going — it overran its time limit and cannot be stopped \
+             early. Wait for it to finish, or make the program smaller so it fits the budget."
+                .into(),
+        ));
+    }
+
     let stats = governor::stats();
     if stats.thermal >= governor::ThermalState::Severe {
         return Err(VonError::Throttled(format!(
@@ -353,53 +398,26 @@ mod python_backend {
 
     /// Prelude injected before the agent's code.
     ///
-    /// Two jobs: capture output (RustPython writes to the host stdout otherwise,
-    /// which on Android goes to logcat where we cannot read it), and install a
-    /// cooperative watchdog. `settrace` fires per call, so a call-free hot loop
-    /// slips past it — the detached-thread timeout below is the real backstop.
-    /// It exists to give the agent a clean `TimeoutError` traceback in the
-    /// common case, which is far more useful than an opaque kill.
+    /// Two jobs: capture output (RustPython writes to the host stdout
+    /// otherwise, which on Android goes to logcat where we cannot read it), and
+    /// install a cooperative watchdog. `settrace` fires per call, so a
+    /// call-free hot loop slips past it — the detached-thread timeout below is
+    /// the real backstop. It exists to give the agent a clean `TimeoutError`
+    /// traceback in the common case, which is far more useful than an opaque
+    /// kill.
+    ///
+    /// `sys.stdout` must stay a *native* object. It was briefly a small Python
+    /// class that mirrored writes to a file, so the host could tail them and
+    /// show output as it was produced. That made every `print()` a Python-level
+    /// call, and every Python-level call fires the `settrace` hook above —
+    /// which is itself Python, and calls `time.monotonic()`. On a VM that does
+    /// not suppress tracing inside the trace function that recurses until the
+    /// stack is gone, and the app dies instantly and natively the moment the
+    /// program prints anything. Streaming is not worth putting a Python frame
+    /// in that path.
     const PRELUDE: &str = r#"
 import sys, io, time
-
-class __AfTee:
-    """Keeps the buffer the epilogue reads, and mirrors to a file as it goes.
-
-    The mirror is what makes a long run visible: the host tails that file while
-    the interpreter is still working, so output reaches the screen when it is
-    printed rather than when the program ends. Written in Python rather than as
-    a native hook because it needs no interop at all — the flush is the whole
-    mechanism.
-    """
-
-    def __init__(self, path):
-        self.buf = io.StringIO()
-        try:
-            self._mirror = open(path, "w")
-        except Exception:
-            self._mirror = None
-
-    def write(self, s):
-        self.buf.write(s)
-        if self._mirror is not None:
-            try:
-                self._mirror.write(s)
-                self._mirror.flush()
-            except Exception:
-                self._mirror = None
-        return len(s)
-
-    def flush(self):
-        if self._mirror is not None:
-            try:
-                self._mirror.flush()
-            except Exception:
-                self._mirror = None
-
-    def getvalue(self):
-        return self.buf.getvalue()
-
-__af_out = __AfTee(__AF_MIRROR__)
+__af_out = io.StringIO()
 __af_err = io.StringIO()
 sys.stdout = __af_out
 sys.stderr = __af_err
@@ -420,19 +438,13 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
         sandbox: &Sandbox,
         code: &str,
         timeout_ms: u64,
-        on_output: &mut dyn FnMut(&str),
+        on_progress: &mut dyn FnMut(&str),
     ) -> Result<ExecOutcome> {
         let timeout_s = timeout_ms as f64 / 1000.0;
 
-        // Deliberately outside the sandbox: it is scaffolding, and a file that
-        // turns up in the user's project and in `list_files` because they ran
-        // something is a leak, not a feature.
-        let mirror = std::env::temp_dir().join(format!("von-run-{}.log", uuid::Uuid::new_v4()));
         let program = format!(
             "{}\ntry:\n{}\nexcept SystemExit as __af_e:\n    __af_exit = __af_e.code or 0\nexcept BaseException:\n    import traceback; traceback.print_exc(); __af_exit = 1\nelse:\n    __af_exit = 0\n{}",
-            PRELUDE
-                .replace("__AF_TIMEOUT_S__", &timeout_s.to_string())
-                .replace("__AF_MIRROR__", &format!("{:?}", mirror.to_string_lossy())),
+            PRELUDE.replace("__AF_TIMEOUT_S__", &timeout_s.to_string()),
             indent(code),
             EPILOGUE
         );
@@ -447,34 +459,42 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
             .name("von-python".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
+                // Dropped when this thread ends, which for an overrun is long
+                // after the caller stopped waiting — that is exactly the window
+                // a second execution must not start in.
+                let _slot = InterpreterSlot::take();
                 let result = execute(&program, &root);
                 // Receiver may already be gone after a timeout; that is fine.
                 let _ = tx.send(result);
             })
             .map_err(|e| VonError::Execution(e.to_string()))?;
 
-        // Polled rather than waited on, so output can be forwarded while the
-        // program is still running. Without this a two-minute run is a
-        // two-minute blank screen, which is the same complaint as a model that
-        // thinks in silence.
+        // Polled rather than waited on, so the run can report that it is still
+        // going. A minute of blank screen is the same complaint as a model that
+        // thinks in silence — but the report is a clock rather than the
+        // program's output, because putting a Python object in the stdout path
+        // is what made this crash. Elapsed time claims nothing it cannot see.
         let deadline = Duration::from_millis(timeout_ms + 500);
-        let mut sent = 0usize;
+        let mut announced = 0u64;
         let outcome = loop {
             match rx.recv_timeout(Duration::from_millis(250)) {
-                Ok(result) => {
-                    tail(&mirror, &mut sent, on_output);
-                    break Ok(result);
-                }
+                Ok(result) => break Ok(result),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break Err(()),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    tail(&mirror, &mut sent, on_output);
+                    let seconds = started.elapsed().as_secs();
+                    if seconds > announced {
+                        announced = seconds;
+                        on_progress(&format!(
+                            "running… {seconds}s of {}s",
+                            timeout_ms / 1000
+                        ));
+                    }
                     if started.elapsed() >= deadline {
                         break Err(());
                     }
                 }
             }
         };
-        let _ = std::fs::remove_file(&mirror);
 
         match outcome {
             Ok((stdout, stderr, exit_code)) => {
@@ -584,31 +604,6 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
             .unwrap_or_default()
     }
 
-    /// Forwards whatever the program has printed since the last look.
-    ///
-    /// Reads by byte offset rather than watching for changes: the file is
-    /// append-only, nothing else writes to it, and a missing file simply means
-    /// the program has not printed yet.
-    fn tail(path: &std::path::Path, sent: &mut usize, on_output: &mut dyn FnMut(&str)) {
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            return;
-        };
-        if contents.len() <= *sent {
-            return;
-        }
-        // Resume on a character boundary; a multi-byte character can straddle
-        // two flushes.
-        let mut from = *sent;
-        while from < contents.len() && !contents.is_char_boundary(from) {
-            from += 1;
-        }
-        let fresh = &contents[from..];
-        if !fresh.is_empty() {
-            on_output(fresh);
-        }
-        *sent = contents.len();
-    }
-
     /// The agent's code goes inside a `try:` block, so it needs indenting.
     fn indent(code: &str) -> String {
         code.lines()
@@ -649,22 +644,21 @@ pub fn run_wasm(
 
 /// Runs Python source in the embedded interpreter.
 ///
-/// `on_output` receives stdout as the program produces it, not at the end. A
-/// run may now last two minutes, and two minutes of blank screen is the same
-/// failure as a model that thinks in silence — the work is happening and the
-/// user has no way to tell.
+/// `on_progress` is called about once a second with how long the program has
+/// been running. Not its output: `sys.stdout` has to stay a native object, for
+/// the reason spelled out on the prelude above.
 pub fn run_python(
     sandbox: &Sandbox,
     code: &str,
     timeout_ms: Option<u64>,
-    on_output: &mut dyn FnMut(&str),
+    on_progress: &mut dyn FnMut(&str),
 ) -> Result<ExecOutcome> {
     preflight()?;
     if code.trim().is_empty() {
         return Err(VonError::InvalidArgument("no code to run".into()));
     }
     let _guard = governor::begin_inference();
-    python_backend::run(sandbox, code, effective_timeout(timeout_ms), on_output)
+    python_backend::run(sandbox, code, effective_timeout(timeout_ms), on_progress)
 }
 
 /// Runs a Python file already written into the sandbox.
@@ -672,10 +666,10 @@ pub fn run_python_file(
     sandbox: &Sandbox,
     rel_path: &str,
     timeout_ms: Option<u64>,
-    on_output: &mut dyn FnMut(&str),
+    on_progress: &mut dyn FnMut(&str),
 ) -> Result<ExecOutcome> {
     let code = sandbox.read_file(rel_path)?;
-    run_python(sandbox, &code, timeout_ms, on_output)
+    run_python(sandbox, &code, timeout_ms, on_progress)
 }
 
 #[cfg(test)]

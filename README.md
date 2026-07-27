@@ -315,6 +315,13 @@ first.
   dependency set.
 - **No OCR.** A scanned PDF has no text layer, and VON says so rather than
   returning an empty document.
+- **A running program's output arrives at the end, not as it is printed.**
+  `sys.stdout` has to stay a native object: making it a Python class puts a
+  Python frame under the `settrace` watchdog, which recurses and takes the
+  process down instantly. The phase line shows elapsed time instead.
+- **A program that overruns cannot be stopped.** The interpreter thread is
+  detached and left to finish, so the next run is refused until it does rather
+  than letting two interpreters compete for a phone's memory.
 - **A malformed turn is repaired on load, not prevented on write.** Every bug
   that made a VON permanently unusable had the same shape: a bad value reached
   the transcript, and the transcript is replayed in full on every later turn.

@@ -230,14 +230,14 @@ pub struct Execution {
 /// Runs one tool call. Never returns `Err` for a tool-level failure — those are
 /// folded into the observation so the agent can react to them.
 ///
-/// `on_output` carries a running program's stdout out to the UI while it is
-/// still running. Only `run_python` uses it; everything else here finishes far
-/// too quickly to be worth watching.
+/// `on_progress` reports that a long-running tool is still going. Only
+/// `run_python` uses it; everything else here finishes far too quickly to be
+/// worth watching.
 pub fn execute(
     sandbox: &Sandbox,
     project_id: &str,
     call: &ToolCall,
-    on_output: &mut dyn FnMut(&str),
+    on_progress: &mut dyn FnMut(&str),
 ) -> Execution {
     let mut effects = ToolEffects::default();
 
@@ -250,7 +250,7 @@ pub fn execute(
         "delete_file" => delete_file(sandbox, &call.arguments).inspect(|_| {
             effects.files_changed = true;
         }),
-        "run_python" => run_python(sandbox, &call.arguments, on_output).inspect(|_| {
+        "run_python" => run_python(sandbox, &call.arguments, on_progress).inspect(|_| {
             // Scripts routinely write output files.
             effects.files_changed = true;
         }),
@@ -405,15 +405,15 @@ fn delete_file(sandbox: &Sandbox, args: &Value) -> Result<String> {
 fn run_python(
     sandbox: &Sandbox,
     args: &Value,
-    on_output: &mut dyn FnMut(&str),
+    on_progress: &mut dyn FnMut(&str),
 ) -> Result<String> {
     let timeout = optional_timeout(args);
     let outcome = match (string_arg(args, "code"), string_arg(args, "path")) {
         (Some(code), _) if !code.trim().is_empty() => {
-            executor::run_python(sandbox, &code, timeout, on_output)?
+            executor::run_python(sandbox, &code, timeout, on_progress)?
         }
         (_, Some(path)) if !path.trim().is_empty() => {
-            executor::run_python_file(sandbox, &path, timeout, on_output)?
+            executor::run_python_file(sandbox, &path, timeout, on_progress)?
         }
         _ => {
             return Err(VonError::InvalidArgument(
