@@ -179,9 +179,14 @@ fn scrape_word_xml(xml: &str) -> String {
             }
         } else if tag == "w:tab" || tag == "w:tab/" {
             out.push('\t');
-        } else if tag == "w:br" || tag == "w:br/" || tag.starts_with("w:br ") {
-            out.push('\n');
-        } else if tag == "/w:p" {
+        } else if tag == "w:br"
+            || tag == "w:br/"
+            || tag.starts_with("w:br ")
+            || tag == "/w:p"
+        {
+            // An explicit line break and the end of a paragraph amount to the
+            // same thing once the styling is gone, so they share an arm —
+            // which also keeps clippy from calling the split blocks identical.
             out.push('\n');
         }
 

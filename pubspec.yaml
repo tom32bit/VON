@@ -36,7 +36,9 @@ dependencies:
   # never needs broad storage permission — the user grants one file at a time.
   file_picker: ^8.1.2
 
-  share_plus: ^9.0.0
+  # 10.x rather than 9.x: 9 pins `web ^0.5.0` and file_picker needs `web ^1.0.0`,
+  # which is an unsolvable version constraint rather than a preference.
+  share_plus: ^10.0.1
   url_launcher: ^6.3.0
   intl: ^0.19.0
 
