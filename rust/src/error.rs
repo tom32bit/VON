@@ -57,6 +57,13 @@ pub enum VonError {
     #[error("network error: {0}")]
     Network(String),
 
+    /// A sync found the same file changed on both sides. Its own variant rather
+    /// than an `InvalidArgument` because the UI has a specific offer to make
+    /// here — push to a branch instead — and branching on a stable `kind` beats
+    /// matching on message text.
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("{0}")]
     Other(String),
 }
@@ -79,6 +86,7 @@ impl VonError {
             Self::Db(_) => "db",
             Self::Io(_) => "io",
             Self::Network(_) => "network",
+            Self::Conflict(_) => "conflict",
             Self::Other(_) => "other",
         }
     }
@@ -115,6 +123,10 @@ impl VonError {
             Self::Throttled(m) => format!(
                 "Throttled: {m}. The device is protecting itself. Prefer cheaper \
                  steps, or ask the user to switch this project to a cloud model."
+            ),
+            Self::Conflict(m) => format!(
+                "Conflict: {m}. Do not resolve this by overwriting files. Tell the \
+                 user which ones diverged and let them decide."
             ),
             other => other.to_string(),
         }

@@ -138,18 +138,47 @@ pub fn specs(project_kind: &str) -> Vec<ToolSpec> {
         tools.push(ToolSpec {
             name: "git_push".into(),
             description:
-                "Publish everything in this project to GitHub as a single commit. Use it when                  the user asks to push, publish, or put the work on GitHub. The repository is                  created under their account if it does not exist. Secrets and dependency                  directories are filtered out automatically."
+                "Publish this project to GitHub as a single commit. Use it when the user asks \
+                 to push, publish, or put the work on GitHub. The repository is created under \
+                 their account if it does not exist, and secrets and dependency directories \
+                 are filtered out automatically.\n\n\
+                 This is a merge, not an overwrite: files added to the repository since the \
+                 last sync are brought into this project rather than deleted. If the same file \
+                 changed in both places nothing is pushed, and you are told which files \
+                 diverged — report that to the user and let them decide."
                     .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "repo": {
                         "type": "string",
-                        "description": "Repository as `name` (created if needed) or `owner/name`                                         (must already exist). Ask the user if they have not said.",
+                        "description": "Repository as `name` (created if needed) or `owner/name` \
+                                        (must already exist). Ask the user if they have not said.",
                     },
                     "message": { "type": "string", "description": "Commit message describing this change." },
                     "branch": { "type": "string", "description": "Branch name. Defaults to `main`." },
                     "private": { "type": "boolean", "description": "Create the repository private. Defaults to true." }
+                },
+                "required": ["repo"],
+                "additionalProperties": false,
+            }),
+        });
+        tools.push(ToolSpec {
+            name: "git_pull".into(),
+            description:
+                "Bring a GitHub repository's files into this project without pushing anything \
+                 back. Use it to start from existing code, or to catch up before continuing \
+                 work. Refuses rather than overwriting if a file differs in both places."
+                    .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository as `owner/name`, or `name` for one of the \
+                                        user's own.",
+                    },
+                    "branch": { "type": "string", "description": "Branch name. Defaults to `main`." }
                 },
                 "required": ["repo"],
                 "additionalProperties": false,
@@ -219,7 +248,11 @@ pub fn execute(sandbox: &Sandbox, project_id: &str, call: &ToolCall) -> Executio
             effects.preview_url = Some(url.clone());
             format!("Preview is live at {url}. The user can open the Preview tab to see it.")
         }),
-        "git_push" => git_push(sandbox, &call.arguments),
+        "git_push" => git_push(sandbox, project_id, &call.arguments),
+        // Files land in the sandbox, so the explorer has to refresh.
+        "git_pull" => git_pull(sandbox, project_id, &call.arguments).inspect(|_| {
+            effects.files_changed = true;
+        }),
         "task_complete" => {
             let summary = string_arg(&call.arguments, "summary").unwrap_or_default();
             effects.completed = Some(summary.clone());
@@ -266,12 +299,17 @@ pub fn describe(call: &ToolCall) -> String {
         }
         "run_wasm" => format!("Running {}", arg("path")),
         "start_preview" => "Starting live preview".into(),
-        "git_push" => {
+        "git_push" | "git_pull" => {
+            let verb = if call.name == "git_push" {
+                "Syncing with"
+            } else {
+                "Pulling from"
+            };
             let repo = arg("repo");
             if repo.is_empty() {
-                "Pushing to GitHub".into()
+                format!("{verb} GitHub")
             } else {
-                format!("Pushing to GitHub: {repo}")
+                format!("{verb} {repo}")
             }
         }
         "task_complete" => "Finishing up".into(),
@@ -382,22 +420,16 @@ fn start_preview(sandbox: &Sandbox, project_id: &str) -> Result<String> {
     server::start(project_id, sandbox.clone())
 }
 
-/// Publishes the sandbox to GitHub.
+/// Syncs the sandbox with GitHub.
 ///
 /// `private` defaults to true. A model that omits the flag is not making a
 /// judgement about who should see the code, and the safe reading of silence is
 /// "not the whole internet" — the user can flip it on GitHub in two clicks,
 /// which is the easier direction to travel.
-fn git_push(sandbox: &Sandbox, args: &Value) -> Result<String> {
-    let repo = string_arg(args, "repo").unwrap_or_default();
-    if repo.trim().is_empty() {
-        return Err(VonError::InvalidArgument(
-            "which repository? Pass `repo` as `name` to create one under the user's account, or \
-             `owner/name` for an existing one. Ask the user if they have not said."
-                .into(),
-        ));
-    }
-    let outcome = crate::github::push_sandbox(
+fn git_push(sandbox: &Sandbox, project_id: &str, args: &Value) -> Result<String> {
+    let repo = require_repo(args)?;
+    let outcome = crate::github::sync_sandbox(
+        project_id,
         sandbox,
         &repo,
         &string_arg(args, "branch").unwrap_or_default(),
@@ -406,10 +438,15 @@ fn git_push(sandbox: &Sandbox, args: &Value) -> Result<String> {
         |_| {},
     )?;
 
+    if outcome.up_to_date {
+        return Ok(format!(
+            "{} was already up to date; there was nothing to commit.",
+            outcome.repo_full_name
+        ));
+    }
+
     let mut out = format!(
-        "Pushed {} file{} to {} on branch {} as commit {}.\n{}",
-        outcome.files_pushed,
-        if outcome.files_pushed == 1 { "" } else { "s" },
+        "Synced with {} on branch {}. Commit {}.\n{}",
         outcome.repo_full_name,
         outcome.branch,
         &outcome.commit_sha[..outcome.commit_sha.len().min(7)],
@@ -418,6 +455,7 @@ fn git_push(sandbox: &Sandbox, args: &Value) -> Result<String> {
     if outcome.created_repo {
         out.push_str("\nThe repository did not exist and was created.");
     }
+    append_sync_detail(&mut out, &outcome.pulled, &outcome.removed_locally);
     if !outcome.skipped.is_empty() {
         // Named rather than summarised: the agent should be able to tell the
         // user which file is missing from the repo and why.
@@ -427,6 +465,65 @@ fn git_push(sandbox: &Sandbox, args: &Value) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+/// Brings a repository's files into the sandbox without pushing anything back.
+fn git_pull(sandbox: &Sandbox, project_id: &str, args: &Value) -> Result<String> {
+    let repo = require_repo(args)?;
+    let outcome = crate::github::pull_into_sandbox(
+        project_id,
+        sandbox,
+        &repo,
+        &string_arg(args, "branch").unwrap_or_default(),
+        |_| {},
+    )?;
+
+    if outcome.pulled.is_empty() && outcome.removed_locally.is_empty() {
+        return Ok(format!(
+            "This project already matches {} on branch {}.",
+            outcome.repo_full_name, outcome.branch
+        ));
+    }
+    let mut out = format!(
+        "Pulled {} at {}.",
+        outcome.repo_full_name,
+        &outcome.commit_sha[..outcome.commit_sha.len().min(7)],
+    );
+    append_sync_detail(&mut out, &outcome.pulled, &outcome.removed_locally);
+    out.push_str("\n\nCall list_files to see the project as it now stands.");
+    Ok(out)
+}
+
+fn require_repo(args: &Value) -> Result<String> {
+    let repo = string_arg(args, "repo").unwrap_or_default();
+    if repo.trim().is_empty() {
+        return Err(VonError::InvalidArgument(
+            "which repository? Pass `repo` as `name` to use one under the user's account, or \
+             `owner/name` for somebody else's. Ask the user if they have not said."
+                .into(),
+        ));
+    }
+    Ok(repo)
+}
+
+/// Spells out what the merge did to the sandbox.
+///
+/// The agent has to be able to answer "what changed?" without calling
+/// `list_files` again, and a file that appeared or vanished underneath it is
+/// exactly what would otherwise confuse it on the next step.
+fn append_sync_detail(out: &mut String, pulled: &[String], removed: &[String]) {
+    if !pulled.is_empty() {
+        out.push_str("\n\nBrought in from GitHub:\n");
+        for path in pulled {
+            out.push_str(&format!("  - {path}\n"));
+        }
+    }
+    if !removed.is_empty() {
+        out.push_str("\nDeleted on GitHub, so removed here too:\n");
+        for path in removed {
+            out.push_str(&format!("  - {path}\n"));
+        }
+    }
 }
 
 fn truncate_observation(mut text: String) -> String {

@@ -52,6 +52,9 @@ percent-encoding = "2.3"
 # GitHub's Git Data API takes blob content base64-encoded; binary files in a
 # sandbox make the "utf-8" encoding option unusable.
 base64 = "0.22"
+# Git blob object ids, computed locally so a push can tell which files GitHub
+# already has and skip uploading them. Not a security use.
+sha1 = "0.10"
 
 llama-cpp-2 = { version = "0.1.152", optional = true }
 # Streaming UTF-8 decode for token pieces; `token_to_piece` takes the

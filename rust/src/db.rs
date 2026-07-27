@@ -44,7 +44,13 @@ fn with_db<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
     f(&conn)
 }
 
-const SCHEMA_VERSION: i32 = 1;
+/// 2 added `github_links`.
+///
+/// Bumping this re-runs the whole batch below, which is safe because every
+/// statement in it is `IF NOT EXISTS` — a v1 database gains the new table and
+/// keeps everything else. That holds only as long as migrations stay additive;
+/// the first one that alters an existing table needs a real step list here.
+const SCHEMA_VERSION: i32 = 2;
 
 fn migrate(conn: &Connection) -> Result<()> {
     let current: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -113,6 +119,19 @@ fn migrate(conn: &Connection) -> Result<()> {
             context_len     INTEGER NOT NULL DEFAULT 4096,
             file_path       TEXT NOT NULL DEFAULT '',
             downloaded      INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- What VON last pushed for a project, which is the merge base for the
+        -- next push. Without it a push cannot tell "the user deleted this
+        -- file" from "somebody else added it", and silently deletes the
+        -- second case.
+        CREATE TABLE IF NOT EXISTS github_links (
+            project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            repo        TEXT NOT NULL,
+            branch      TEXT NOT NULL,
+            base_commit TEXT NOT NULL,
+            base_tree   TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS device_profile (
@@ -486,6 +505,63 @@ pub fn providers_with_keys() -> Result<Vec<String>> {
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(rows)
+    })
+}
+
+// ---- github links -------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct GitHubLink {
+    pub repo: String,
+    pub branch: String,
+    /// The commit VON last synced this project to.
+    pub base_commit: String,
+    /// That commit's tree, kept alongside so resolving the base costs one
+    /// request instead of two.
+    pub base_tree: String,
+}
+
+pub fn get_github_link(project_id: &str) -> Result<Option<GitHubLink>> {
+    with_db(|c| {
+        Ok(c.query_row(
+            "SELECT repo, branch, base_commit, base_tree FROM github_links
+             WHERE project_id = ?1",
+            params![project_id],
+            |r| {
+                Ok(GitHubLink {
+                    repo: r.get(0)?,
+                    branch: r.get(1)?,
+                    base_commit: r.get(2)?,
+                    base_tree: r.get(3)?,
+                })
+            },
+        )
+        .optional()?)
+    })
+}
+
+pub fn set_github_link(project_id: &str, link: &GitHubLink) -> Result<()> {
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO github_links
+                (project_id, repo, branch, base_commit, base_tree, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(project_id) DO UPDATE SET
+                repo = excluded.repo,
+                branch = excluded.branch,
+                base_commit = excluded.base_commit,
+                base_tree = excluded.base_tree,
+                updated_at = excluded.updated_at",
+            params![
+                project_id,
+                link.repo,
+                link.branch,
+                link.base_commit,
+                link.base_tree,
+                now_ms()
+            ],
+        )?;
+        Ok(())
     })
 }
 

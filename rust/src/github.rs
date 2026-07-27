@@ -21,6 +21,8 @@
 //! never returned to Dart, and never sent anywhere except `api.github.com`.
 
 use base64::Engine as _;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -76,6 +78,23 @@ pub struct PushOutcome {
     /// Files left behind and why — surfaced rather than swallowed, so a missing
     /// file in the repo is never a silent surprise.
     pub skipped: Vec<String>,
+    /// Files that came *from* GitHub during the merge and are now in the
+    /// sandbox. A sync changes the VON as well as the repo, and saying so is
+    /// the difference between a merge and a surprise.
+    pub pulled: Vec<String>,
+    /// Files deleted on GitHub since the last sync, and so deleted here too.
+    pub removed_locally: Vec<String>,
+    /// The branch already held exactly this tree, so no commit was made.
+    pub up_to_date: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullOutcome {
+    pub repo_full_name: String,
+    pub branch: String,
+    pub commit_sha: String,
+    pub pulled: Vec<String>,
+    pub removed_locally: Vec<String>,
 }
 
 /// The stored token, or a `MissingApiKey` error naming what to do about it.
@@ -131,12 +150,21 @@ fn fetch_account(token: &str) -> Result<Account> {
     })
 }
 
-/// Publishes the sandbox as a single commit.
+/// Synchronises the sandbox with a branch and leaves both holding the merged
+/// result.
 ///
-/// `repo` may be `name` (created under the token's own account) or
-/// `owner/name` (which must already exist — VON will not create repositories
-/// inside an organisation on your behalf).
-pub fn push_sandbox(
+/// This is a three-way merge, not an overwrite. `base` — the tree VON last
+/// pushed for this project — is fetched from the link table, and every path is
+/// resolved against it, so a file added on GitHub since the last push survives
+/// and a file the agent deleted really is deleted. Changes that arrived
+/// remotely are written back into the sandbox before the push, because a
+/// commit containing content the Files tab has never seen would be a lie.
+///
+/// Refuses on conflict rather than picking a side. There is no local history to
+/// fall back on and no way to show a diff on a phone worth acting on, so the
+/// honest move is to name the files and stop.
+pub fn sync_sandbox(
+    project_id: &str,
     sandbox: &Sandbox,
     repo: &str,
     branch: &str,
@@ -156,13 +184,14 @@ pub fn push_sandbox(
         message.trim()
     };
 
-    on_progress("Collecting files");
+    on_progress("Reading the VON");
     let Payload { files, skipped } = collect(sandbox)?;
-    if files.is_empty() {
-        return Err(VonError::InvalidArgument(
-            "this VON has no files to publish yet".into(),
-        ));
-    }
+    let ours: Snapshot = files
+        .iter()
+        .map(|f| (f.path.clone(), blob_sha(&f.bytes)))
+        .collect();
+    let local_bytes: BTreeMap<&str, &Vec<u8>> =
+        files.iter().map(|f| (f.path.as_str(), &f.bytes)).collect();
 
     on_progress("Resolving repository");
     let (full_name, created_repo) = ensure_repo(&token, repo, private)?;
@@ -172,26 +201,86 @@ pub fn push_sandbox(
     // read and the commit we build is a root commit.
     let parent = head_commit(&token, &owner, &name, branch)?;
 
-    let mut tree_entries = Vec::with_capacity(files.len());
-    for (index, file) in files.iter().enumerate() {
-        on_progress(&format!("Uploading {} of {}", index + 1, files.len()));
+    on_progress("Comparing with GitHub");
+    let (parent_tree, theirs) = match &parent {
+        Some(commit) => {
+            let tree_sha = commit_tree(&token, &owner, &name, commit)?;
+            let listing = snapshot(&token, &owner, &name, &tree_sha)?;
+            (Some(tree_sha), listing)
+        }
+        None => (None, Snapshot::new()),
+    };
+
+    // The merge base. A link recorded against a different repo or branch tells
+    // us nothing about *this* target, so it is ignored rather than trusted —
+    // an empty base degrades to "treat everything remote as new", which is
+    // conservative in the right direction: it never deletes.
+    let link = crate::db::get_github_link(project_id)?;
+    let base = match &link {
+        Some(l) if l.repo == full_name && l.branch == branch => {
+            snapshot(&token, &owner, &name, &l.base_tree)?
+        }
+        _ => Snapshot::new(),
+    };
+
+    let plan = plan_merge(&base, &ours, &theirs);
+    if !plan.conflicts.is_empty() {
+        return Err(VonError::Conflict(format!(
+            "{} changed both here and on {full_name}. Nothing was pushed and nothing in this VON \
+             was touched. Push to a different branch to keep both versions, or delete your copy \
+             of the file to take theirs.",
+            plan.conflicts.join(", ")
+        )));
+    }
+
+    // Sandbox first. If a quota rejects an incoming file, that should happen
+    // before a commit exists, not after.
+    let pulled = plan.paths_with(Action::Pull);
+    let removed_locally = plan.paths_with(Action::RemoveBoth);
+    for (index, path) in pulled.iter().enumerate() {
+        on_progress(&format!(
+            "Bringing in {} of {}",
+            index + 1,
+            pulled.len()
+        ));
+        let sha = &plan.entries[path].0;
+        let bytes = fetch_blob(&token, &owner, &name, sha)?;
+        sandbox.write_bytes(path, &bytes)?;
+    }
+    for path in &removed_locally {
+        // Already gone is the desired state, so a missing file is not an error.
+        let _ = sandbox.delete(path);
+    }
+
+    let uploads = plan.paths_with(Action::Upload);
+    let mut tree_entries = Vec::with_capacity(plan.entries.len());
+    for (index, path) in uploads.iter().enumerate() {
+        on_progress(&format!("Uploading {} of {}", index + 1, uploads.len()));
+        let bytes = local_bytes.get(path.as_str()).ok_or_else(|| {
+            VonError::Other(format!("'{path}' was planned for upload but has no content"))
+        })?;
         let blob = request(
             &token,
             reqwest::Method::POST,
             &format!("/repos/{owner}/{name}/git/blobs"),
             Some(json!({
-                "content": base64::engine::general_purpose::STANDARD.encode(&file.bytes),
+                "content": base64::engine::general_purpose::STANDARD.encode(bytes),
                 "encoding": "base64",
             })),
         )?;
-        let sha = blob
+        let returned = blob
             .get("sha")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                VonError::Other(format!("GitHub stored '{}' but returned no sha", file.path))
-            })?;
+            .ok_or_else(|| VonError::Other(format!("GitHub stored '{path}' but returned no sha")))?;
+        debug_assert_eq!(returned, plan.entries[path].0, "blob id disagreement");
+    }
+
+    for (path, (sha, action)) in &plan.entries {
+        if matches!(action, Action::RemoveBoth | Action::Drop) {
+            continue;
+        }
         tree_entries.push(json!({
-            "path": file.path,
+            "path": path,
             // 100644 for everything: a sandbox has no executables to speak of
             // and no way to record a mode, so claiming one would be a lie.
             "mode": "100644",
@@ -199,10 +288,43 @@ pub fn push_sandbox(
             "sha": sha,
         }));
     }
+    if tree_entries.is_empty() {
+        return Err(VonError::InvalidArgument(
+            "this VON has no files to publish yet".into(),
+        ));
+    }
+
+    // Nothing to say: the merged tree is byte-for-byte what the branch already
+    // holds. An empty commit would just be noise in the history.
+    let unchanged = parent.is_some()
+        && theirs.len() == tree_entries.len()
+        && plan
+            .entries
+            .iter()
+            .all(|(p, (sha, _))| theirs.get(p) == Some(sha));
+    if let (true, Some(commit), Some(tree)) = (unchanged, &parent, &parent_tree) {
+        // Still worth recording: the base may have been stale or missing, and
+        // this is the cheapest moment to learn that the two sides agree.
+        remember(project_id, &full_name, branch, commit, tree)?;
+        let commit = commit.clone();
+        return Ok(PushOutcome {
+            commit_url: format!("https://github.com/{full_name}/commit/{commit}"),
+            repo_full_name: full_name,
+            branch: branch.to_string(),
+            commit_sha: commit,
+            files_pushed: 0,
+            created_repo,
+            skipped,
+            pulled,
+            removed_locally,
+            up_to_date: true,
+        });
+    }
 
     on_progress("Building the commit");
-    // Deliberately no `base_tree`: this tree is the whole VON, so a file the
-    // agent deleted is absent here and therefore deleted in the repo too.
+    // No `base_tree`: `tree_entries` is already the complete merged tree, so
+    // layering it on the previous one would resurrect the paths the merge
+    // decided to delete.
     let tree = request(
         &token,
         reqwest::Method::POST,
@@ -212,7 +334,8 @@ pub fn push_sandbox(
     let tree_sha = tree
         .get("sha")
         .and_then(Value::as_str)
-        .ok_or_else(|| VonError::Other("GitHub returned a tree with no sha".into()))?;
+        .ok_or_else(|| VonError::Other("GitHub returned a tree with no sha".into()))?
+        .to_string();
 
     let mut commit_body = json!({ "message": message, "tree": tree_sha });
     if let Some(parent) = &parent {
@@ -232,15 +355,26 @@ pub fn push_sandbox(
 
     on_progress("Updating the branch");
     if parent.is_some() {
-        // `force` because the tree is authoritative: VON has no local history
-        // to fast-forward from, and refusing here would leave the user with a
-        // commit object that no branch points at.
+        // Not forced. The commit's parent is the head read at the start of this
+        // sync, so the update is a fast-forward by construction — force would
+        // change nothing in the ordinary case. The one case it does change is
+        // the one that matters: somebody pushing between our read and our
+        // write, whose commit force would silently discard.
         request(
             &token,
             reqwest::Method::PATCH,
             &format!("/repos/{owner}/{name}/git/refs/heads/{branch}"),
-            Some(json!({ "sha": commit_sha, "force": true })),
-        )?;
+            Some(json!({ "sha": commit_sha })),
+        )
+        .map_err(|e| match e {
+            VonError::InvalidArgument(detail) if detail.to_lowercase().contains("fast forward") => {
+                VonError::InvalidArgument(format!(
+                    "'{branch}' moved on GitHub while this sync was in flight, so it was not \
+                     updated. Nothing was lost — sync again to merge against what landed."
+                ))
+            }
+            other => other,
+        })?;
     } else {
         request(
             &token,
@@ -250,15 +384,328 @@ pub fn push_sandbox(
         )?;
     }
 
+    remember(project_id, &full_name, branch, &commit_sha, &tree_sha)?;
+
     Ok(PushOutcome {
         commit_url: format!("https://github.com/{full_name}/commit/{commit_sha}"),
         repo_full_name: full_name,
         branch: branch.to_string(),
         commit_sha,
-        files_pushed: files.len() as u32,
+        files_pushed: (uploads.len() + pulled.len()) as u32,
         created_repo,
         skipped,
+        pulled,
+        removed_locally,
+        up_to_date: false,
     })
+}
+
+/// Records what this project is now in step with, which is the merge base for
+/// the next sync.
+fn remember(project_id: &str, repo: &str, branch: &str, commit: &str, tree: &str) -> Result<()> {
+    crate::db::set_github_link(
+        project_id,
+        &crate::db::GitHubLink {
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+            base_commit: commit.to_string(),
+            base_tree: tree.to_string(),
+        },
+    )
+}
+
+/// Brings a branch into the sandbox without pushing anything back.
+///
+/// The entry point for starting from an existing repository. It is deliberately
+/// one-directional and refuses to clobber: a file that differs locally is a
+/// conflict, exactly as it would be during a sync.
+pub fn pull_into_sandbox(
+    project_id: &str,
+    sandbox: &Sandbox,
+    repo: &str,
+    branch: &str,
+    mut on_progress: impl FnMut(&str),
+) -> Result<PullOutcome> {
+    let token = token()?;
+    let branch = if branch.trim().is_empty() {
+        "main"
+    } else {
+        branch.trim()
+    };
+
+    on_progress("Resolving repository");
+    let repo = repo.trim().trim_matches('/');
+    let (owner, name) = match repo.split_once('/') {
+        Some((owner, name)) => (owner.to_string(), name.to_string()),
+        None => (fetch_account(&token)?.login, repo.to_string()),
+    };
+    validate_repo_name(&name)?;
+    let full_name = format!("{owner}/{name}");
+
+    let head = head_commit(&token, &owner, &name, branch)?.ok_or_else(|| {
+        VonError::NotFound(format!("'{full_name}' has no branch '{branch}' to pull from"))
+    })?;
+    let tree_sha = commit_tree(&token, &owner, &name, &head)?;
+
+    on_progress("Comparing with GitHub");
+    let theirs = snapshot(&token, &owner, &name, &tree_sha)?;
+    let Payload { files, .. } = collect(sandbox)?;
+    let ours: Snapshot = files
+        .iter()
+        .map(|f| (f.path.clone(), blob_sha(&f.bytes)))
+        .collect();
+
+    let link = crate::db::get_github_link(project_id)?;
+    let base = match &link {
+        Some(l) if l.repo == full_name && l.branch == branch => {
+            snapshot(&token, &owner, &name, &l.base_tree)?
+        }
+        _ => Snapshot::new(),
+    };
+
+    let plan = plan_merge(&base, &ours, &theirs);
+    if !plan.conflicts.is_empty() {
+        return Err(VonError::Conflict(format!(
+            "{} changed both here and on {full_name}. Nothing in this VON was touched. Move your \
+             version aside, or sync to a different branch.",
+            plan.conflicts.join(", ")
+        )));
+    }
+
+    let pulled = plan.paths_with(Action::Pull);
+    let removed_locally = plan.paths_with(Action::RemoveBoth);
+    for (index, path) in pulled.iter().enumerate() {
+        on_progress(&format!("Writing {} of {}", index + 1, pulled.len()));
+        let bytes = fetch_blob(&token, &owner, &name, &plan.entries[path].0)?;
+        sandbox.write_bytes(path, &bytes)?;
+    }
+    for path in &removed_locally {
+        let _ = sandbox.delete(path);
+    }
+
+    // The branch this VON is now in step with. Recording it is what lets the
+    // next sync tell a genuine deletion from a file that was simply never
+    // there. Local-only work is safe: it is absent from both the base and the
+    // remote, which the merge reads as "ours, keep it".
+    remember(project_id, &full_name, branch, &head, &tree_sha)?;
+
+    Ok(PullOutcome {
+        repo_full_name: full_name,
+        branch: branch.to_string(),
+        commit_sha: head,
+        pulled,
+        removed_locally,
+    })
+}
+
+/// The tree a commit points at.
+fn commit_tree(token: &str, owner: &str, name: &str, commit: &str) -> Result<String> {
+    let body = request(
+        token,
+        reqwest::Method::GET,
+        &format!("/repos/{owner}/{name}/git/commits/{commit}"),
+        None,
+    )?;
+    body.get("tree")
+        .and_then(|t| t.get("sha"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| VonError::Other(format!("commit {commit} has no tree")))
+}
+
+/// Every file in a tree, flattened to path -> blob id.
+///
+/// GitHub truncates the recursive listing for very large trees. A truncated
+/// answer would read as "those paths do not exist", which the merge would
+/// interpret as deletions, so it is refused instead.
+fn snapshot(token: &str, owner: &str, name: &str, tree_sha: &str) -> Result<Snapshot> {
+    let body = request(
+        token,
+        reqwest::Method::GET,
+        &format!("/repos/{owner}/{name}/git/trees/{tree_sha}?recursive=1"),
+        None,
+    )?;
+
+    if body.get("truncated").and_then(Value::as_bool) == Some(true) {
+        return Err(VonError::Other(format!(
+            "'{owner}/{name}' is too large for VON to compare safely — GitHub truncated its file \
+             listing. Syncing it would risk deleting files that were simply not listed."
+        )));
+    }
+
+    let mut out = Snapshot::new();
+    for entry in body
+        .get("tree")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if entry.get("type").and_then(Value::as_str) != Some("blob") {
+            continue;
+        }
+        let (Some(path), Some(sha)) = (
+            entry.get("path").and_then(Value::as_str),
+            entry.get("sha").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        out.insert(path.to_string(), sha.to_string());
+    }
+    Ok(out)
+}
+
+/// A blob's bytes. GitHub answers base64 regardless of whether it is text.
+fn fetch_blob(token: &str, owner: &str, name: &str, sha: &str) -> Result<Vec<u8>> {
+    let body = request(
+        token,
+        reqwest::Method::GET,
+        &format!("/repos/{owner}/{name}/git/blobs/{sha}"),
+        None,
+    )?;
+    let content = body
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| VonError::Other(format!("blob {sha} came back with no content")))?;
+
+    // The JSON form is wrapped at 60 characters, which the decoder will not
+    // accept as-is.
+    let stripped: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(stripped)
+        .map_err(|e| VonError::Other(format!("blob {sha} was not valid base64: {e}")))
+}
+
+// ---- three-way merge ----------------------------------------------------
+
+/// Git's blob object id: sha1 over the header `blob <len>\0` and then the
+/// bytes. Computing it locally is what lets a push skip uploading a file the
+/// repository already has — the id *is* the content, so a match is proof.
+fn blob_sha(bytes: &[u8]) -> String {
+    use sha1::Digest;
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(format!("blob {}\0", bytes.len()).as_bytes());
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// A snapshot of a tree: path to blob id.
+type Snapshot = BTreeMap<String, String>;
+
+/// What one path's three-way comparison decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Action {
+    /// Goes into the new tree at this blob id, and the bytes must be uploaded
+    /// first because the repository does not have that object yet.
+    Upload,
+    /// Goes into the new tree at this blob id, which the repository already
+    /// has — no upload.
+    Reuse,
+    /// Goes into the new tree, and the sandbox must be updated to match.
+    Pull,
+    /// Leaves the tree, and leaves the sandbox.
+    RemoveBoth,
+    /// Leaves the tree; the sandbox already does not have it.
+    Drop,
+}
+
+#[derive(Debug, Default)]
+struct Plan {
+    /// path -> (blob id, what to do about it)
+    entries: BTreeMap<String, (String, Action)>,
+    /// Paths changed on both sides since the base. Non-empty means refuse.
+    conflicts: Vec<String>,
+}
+
+impl Plan {
+    fn paths_with(&self, action: Action) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, (_, a))| *a == action)
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
+}
+
+/// Decides, for every path either side knows about, what the push should do.
+///
+/// This is an ordinary three-way merge at file granularity. `base` is the tree
+/// VON last pushed for this project, which is the only thing that makes the
+/// interesting cases decidable: without it, a file present on the remote and
+/// absent locally is equally consistent with "the user deleted it" and "someone
+/// else added it", and guessing wrong destroys work either way.
+///
+/// Granularity is the file, not the line. Line-level merging needs a real diff3
+/// and would turn every awkward case into a half-merged file on a phone, which
+/// is worse than being told two people edited the same thing.
+fn plan_merge(base: &Snapshot, ours: &Snapshot, theirs: &Snapshot) -> Plan {
+    // A blob id anywhere on the remote means the object exists in the
+    // repository, so any path can reference it without an upload.
+    let remote_objects: HashSet<&str> = theirs.values().map(String::as_str).collect();
+
+    let mut plan = Plan::default();
+    let paths: BTreeSet<&String> = base.keys().chain(ours.keys()).chain(theirs.keys()).collect();
+
+    for path in paths {
+        let (b, o, t) = (base.get(path), ours.get(path), theirs.get(path));
+
+        // Filtered paths are outside the merge entirely. They are never in
+        // `ours` (collect drops them), so treating them normally would read as
+        // a local deletion on the second push and quietly delete a `.env`
+        // somebody deliberately committed. Pass them through untouched, and
+        // never write them into the sandbox.
+        if is_filtered(path) {
+            if let Some(sha) = t {
+                plan.entries
+                    .insert(path.clone(), (sha.clone(), Action::Reuse));
+            }
+            continue;
+        }
+
+        if o == t {
+            // Same on both sides — including both absent, and including both
+            // having made the identical change.
+            if let Some(sha) = t {
+                plan.entries
+                    .insert(path.clone(), (sha.clone(), Action::Reuse));
+            }
+        } else if b == o {
+            // We did not touch it; whatever happened remotely is the truth.
+            match t {
+                Some(sha) => {
+                    plan.entries
+                        .insert(path.clone(), (sha.clone(), Action::Pull));
+                }
+                None => {
+                    plan.entries
+                        .insert(path.clone(), (String::new(), Action::RemoveBoth));
+                }
+            }
+        } else if b == t {
+            // They did not touch it; ours is the truth.
+            match o {
+                Some(sha) => {
+                    let action = if remote_objects.contains(sha.as_str()) {
+                        Action::Reuse
+                    } else {
+                        Action::Upload
+                    };
+                    plan.entries.insert(path.clone(), (sha.clone(), action));
+                }
+                None => {
+                    plan.entries
+                        .insert(path.clone(), (String::new(), Action::Drop));
+                }
+            }
+        } else {
+            plan.conflicts.push(path.clone());
+        }
+    }
+    plan
+}
+
+fn is_filtered(path: &str) -> bool {
+    path.split('/')
+        .any(|segment| NEVER_PUBLISH.contains(&segment))
 }
 
 /// One file on its way up.
@@ -292,6 +739,7 @@ fn collect(sandbox: &Sandbox) -> Result<Payload> {
             skipped.push(format!("{path} (contains '{segment}')"));
             continue;
         }
+        debug_assert!(!is_filtered(&path));
         let bytes = sandbox.read_bytes(&path)?;
         if bytes.len() as u64 > LARGE_FILE_BYTES {
             skipped.push(format!(
@@ -555,6 +1003,181 @@ mod tests {
             2,
             "wrongly skipped: {:?}",
             payload.skipped
+        );
+    }
+
+    // ---- three-way merge -------------------------------------------------
+    //
+    // The whole point of the merge base is that these cases are decidable.
+    // Without one, "on the remote but not here" is equally consistent with a
+    // local deletion and a remote addition, and guessing destroys work.
+
+    fn snap(entries: &[(&str, &str)]) -> Snapshot {
+        entries
+            .iter()
+            .map(|(p, s)| (p.to_string(), s.to_string()))
+            .collect()
+    }
+
+    fn action(plan: &Plan, path: &str) -> Option<Action> {
+        plan.entries.get(path).map(|(_, a)| a.clone())
+    }
+
+    #[test]
+    fn a_file_added_on_github_survives_the_next_push() {
+        // The bug this whole mechanism exists to prevent: someone adds a README
+        // on the web, and the next push from the phone deletes it.
+        let base = snap(&[("main.py", "aaa")]);
+        let ours = snap(&[("main.py", "aaa")]);
+        let theirs = snap(&[("main.py", "aaa"), ("README.md", "bbb")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(action(&plan, "README.md"), Some(Action::Pull));
+        assert_eq!(
+            action(&plan, "main.py"),
+            Some(Action::Reuse),
+            "an untouched file should cost nothing"
+        );
+    }
+
+    #[test]
+    fn a_file_the_agent_deleted_is_deleted_on_github() {
+        let base = snap(&[("main.py", "aaa"), ("old.py", "ccc")]);
+        let ours = snap(&[("main.py", "aaa")]);
+        let theirs = snap(&[("main.py", "aaa"), ("old.py", "ccc")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(action(&plan, "old.py"), Some(Action::Drop));
+    }
+
+    #[test]
+    fn a_file_deleted_on_github_is_deleted_here() {
+        let base = snap(&[("main.py", "aaa"), ("gone.py", "ccc")]);
+        let ours = snap(&[("main.py", "aaa"), ("gone.py", "ccc")]);
+        let theirs = snap(&[("main.py", "aaa")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(action(&plan, "gone.py"), Some(Action::RemoveBoth));
+    }
+
+    #[test]
+    fn a_locally_edited_file_is_uploaded() {
+        let base = snap(&[("main.py", "aaa")]);
+        let ours = snap(&[("main.py", "zzz")]);
+        let theirs = snap(&[("main.py", "aaa")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert_eq!(action(&plan, "main.py"), Some(Action::Upload));
+        assert_eq!(plan.entries["main.py"].0, "zzz");
+    }
+
+    #[test]
+    fn both_sides_editing_the_same_file_is_a_conflict() {
+        let base = snap(&[("main.py", "aaa")]);
+        let ours = snap(&[("main.py", "zzz")]);
+        let theirs = snap(&[("main.py", "yyy")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert_eq!(plan.conflicts, vec!["main.py"]);
+        assert!(
+            !plan.entries.contains_key("main.py"),
+            "a conflicted path must not silently pick a side"
+        );
+    }
+
+    #[test]
+    fn both_sides_making_the_identical_change_is_not_a_conflict() {
+        // Same content, so there is nothing to disagree about.
+        let base = snap(&[("main.py", "aaa")]);
+        let ours = snap(&[("main.py", "zzz")]);
+        let theirs = snap(&[("main.py", "zzz")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(action(&plan, "main.py"), Some(Action::Reuse));
+    }
+
+    #[test]
+    fn a_file_github_already_has_is_never_re_uploaded() {
+        // Blob ids are content-addressed, so a matching id anywhere on the
+        // remote proves the object exists. On mobile data this is the
+        // difference between sending one file and sending the project.
+        let base = snap(&[("a.py", "aaa")]);
+        let ours = snap(&[("a.py", "aaa"), ("copy.py", "aaa")]);
+        let theirs = snap(&[("a.py", "aaa")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert_eq!(
+            action(&plan, "copy.py"),
+            Some(Action::Reuse),
+            "the blob is already in the repository under another path"
+        );
+    }
+
+    #[test]
+    fn a_first_sync_against_an_existing_repo_imports_it() {
+        // No base: nothing was ever pushed from here, so every remote file is
+        // new to this VON rather than something it deleted.
+        let base = Snapshot::new();
+        let ours = snap(&[("notes.md", "aaa")]);
+        let theirs = snap(&[("src/lib.rs", "bbb"), ("Cargo.toml", "ccc")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(action(&plan, "src/lib.rs"), Some(Action::Pull));
+        assert_eq!(action(&plan, "Cargo.toml"), Some(Action::Pull));
+        assert_eq!(action(&plan, "notes.md"), Some(Action::Upload));
+    }
+
+    #[test]
+    fn a_committed_secret_is_left_alone_rather_than_deleted() {
+        // `.env` never appears in `ours` because collect filters it. Treating
+        // that as a local deletion would erase a file somebody deliberately
+        // committed — and would do it on the *second* sync, once the base knew
+        // about it, which is exactly the kind of delayed bug that gets shipped.
+        let base = snap(&[("main.py", "aaa"), (".env", "sss")]);
+        let ours = snap(&[("main.py", "aaa")]);
+        let theirs = snap(&[("main.py", "aaa"), (".env", "sss")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(
+            action(&plan, ".env"),
+            Some(Action::Reuse),
+            "it stays in the tree"
+        );
+        assert!(
+            !plan.paths_with(Action::Pull).contains(&".env".to_string()),
+            "but it is never written into the sandbox"
+        );
+    }
+
+    #[test]
+    fn a_filtered_path_is_never_a_conflict() {
+        let base = snap(&[("node_modules/x/index.js", "aaa")]);
+        let ours = Snapshot::new();
+        let theirs = snap(&[("node_modules/x/index.js", "bbb")]);
+
+        let plan = plan_merge(&base, &ours, &theirs);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(
+            action(&plan, "node_modules/x/index.js"),
+            Some(Action::Reuse)
+        );
+    }
+
+    #[test]
+    fn blob_ids_match_git() {
+        // `git hash-object` on an empty file, and on "hello\n" — the two values
+        // every git implementation agrees on, which is what makes the skip-
+        // upload optimisation safe to trust.
+        assert_eq!(blob_sha(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        assert_eq!(
+            blob_sha(b"hello\n"),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
         );
     }
 

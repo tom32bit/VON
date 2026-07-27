@@ -39,6 +39,12 @@ pub struct GitHubPushEventDto {
     pub created_repo: bool,
     /// Files deliberately left out, each with its reason.
     pub skipped: Vec<String>,
+    /// Files the merge brought in from GitHub and wrote into the sandbox.
+    pub pulled: Vec<String>,
+    /// Files deleted on GitHub since the last sync, so removed here too.
+    pub removed_locally: Vec<String>,
+    /// The branch already held this exact tree; no commit was made.
+    pub up_to_date: bool,
     pub error_kind: String,
 }
 
@@ -96,9 +102,76 @@ pub fn push_project_to_github(
 ) -> Result<(), VonException> {
     let sandbox = state::sandbox_for(&project_id).map_err(VonException::from)?;
 
-    let outcome = github::push_sandbox(&sandbox, &repo, &branch, &message, private, |stage| {
-        // A closed sink means the user navigated away; the push finishes
-        // regardless, because a half-uploaded tree helps nobody.
+    let outcome = github::sync_sandbox(
+        &project_id,
+        &sandbox,
+        &repo,
+        &branch,
+        &message,
+        private,
+        |stage| {
+            // A closed sink means the user navigated away; the sync finishes
+            // regardless, because a half-uploaded tree helps nobody.
+            let _ = sink.add(GitHubPushEventDto {
+                kind: "progress".into(),
+                detail: stage.to_string(),
+                ..Default::default()
+            });
+        },
+    );
+
+    match outcome {
+        Ok(result) => {
+            let _ = sink.add(GitHubPushEventDto {
+                kind: "done".into(),
+                detail: if result.up_to_date {
+                    format!("{} is already up to date", result.repo_full_name)
+                } else {
+                    format!(
+                        "Synced {} file{} with {}",
+                        result.files_pushed,
+                        if result.files_pushed == 1 { "" } else { "s" },
+                        result.repo_full_name
+                    )
+                },
+                repo_full_name: result.repo_full_name,
+                branch: result.branch,
+                commit_sha: result.commit_sha,
+                commit_url: result.commit_url,
+                files_pushed: result.files_pushed as i32,
+                created_repo: result.created_repo,
+                skipped: result.skipped,
+                pulled: result.pulled,
+                removed_locally: result.removed_locally,
+                up_to_date: result.up_to_date,
+                ..Default::default()
+            });
+            Ok(())
+        }
+        Err(e) => {
+            let exception = VonException::from(e);
+            let _ = sink.add(GitHubPushEventDto {
+                kind: "failed".into(),
+                detail: exception.message.clone(),
+                error_kind: exception.kind.clone(),
+                ..Default::default()
+            });
+            Err(exception)
+        }
+    }
+}
+
+/// Brings a branch into a VON without pushing anything back — the way to start
+/// from an existing repository.
+pub fn pull_project_from_github(
+    sink: StreamSink<GitHubPushEventDto>,
+    project_id: String,
+    repo: String,
+    branch: String,
+) -> Result<(), VonException> {
+    let sandbox = state::sandbox_for(&project_id).map_err(VonException::from)?;
+
+    let outcome = github::pull_into_sandbox(&project_id, &sandbox, &repo, &branch, |stage| {
         let _ = sink.add(GitHubPushEventDto {
             kind: "progress".into(),
             detail: stage.to_string(),
@@ -108,21 +181,24 @@ pub fn push_project_to_github(
 
     match outcome {
         Ok(result) => {
+            let changed = result.pulled.len() + result.removed_locally.len();
             let _ = sink.add(GitHubPushEventDto {
                 kind: "done".into(),
-                detail: format!(
-                    "Pushed {} file{} to {}",
-                    result.files_pushed,
-                    if result.files_pushed == 1 { "" } else { "s" },
-                    result.repo_full_name
-                ),
+                detail: if changed == 0 {
+                    format!("This VON already matches {}", result.repo_full_name)
+                } else {
+                    format!(
+                        "Brought in {changed} file{} from {}",
+                        if changed == 1 { "" } else { "s" },
+                        result.repo_full_name
+                    )
+                },
                 repo_full_name: result.repo_full_name,
                 branch: result.branch,
                 commit_sha: result.commit_sha,
-                commit_url: result.commit_url,
-                files_pushed: result.files_pushed as i32,
-                created_repo: result.created_repo,
-                skipped: result.skipped,
+                pulled: result.pulled,
+                removed_locally: result.removed_locally,
+                up_to_date: changed == 0,
                 ..Default::default()
             });
             Ok(())

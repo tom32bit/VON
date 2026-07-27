@@ -208,11 +208,7 @@ class _WorkspaceHeader extends ConsumerWidget {
           const SizedBox(width: VonSpace.sm),
           _SwitchModelButton(projectId: projectId, project: project),
           const SizedBox(width: VonSpace.xs),
-          _PublishButton(
-            projectId: projectId,
-            project: project,
-            armed: chat.hasDeliverables && !chat.running,
-          ),
+          _PublishButton(projectId: projectId, project: project),
           const SizedBox(width: VonSpace.xs),
           // Concave (disabled) until the agent has produced something, then it
           // pops out with an accent glow (Design.md §6, Screen 5).
@@ -227,21 +223,20 @@ class _WorkspaceHeader extends ConsumerWidget {
   }
 }
 
-/// Publishes the VON to GitHub.
+/// Syncs the VON with GitHub.
 ///
 /// Hidden entirely until an account is connected rather than shown disabled: an
 /// icon that does nothing invites tapping, and the place to fix it (the Model
 /// Hub) is two screens away.
+///
+/// Unlike the export button next to it, this stays live for an empty VON — pull
+/// is how you start *from* a repository, so requiring files first would lock
+/// you out of the one case that needs it most.
 class _PublishButton extends ConsumerWidget {
-  const _PublishButton({
-    required this.projectId,
-    required this.project,
-    required this.armed,
-  });
+  const _PublishButton({required this.projectId, required this.project});
 
   final String projectId;
   final ProjectDto? project;
-  final bool armed;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -249,26 +244,21 @@ class _PublishButton extends ConsumerWidget {
     if (!connected || project == null) return const SizedBox.shrink();
 
     return NeuIconButton(
-      icon: Icons.cloud_upload_outlined,
+      icon: Icons.sync_rounded,
       size: 38,
       iconSize: 18,
       tone: VonColors.textSecondary,
-      selected: !armed,
-      tooltip: armed
-          ? 'Publish this VON to GitHub'
-          : 'Nothing to publish yet — the agent has not created any files',
-      onPressed: !armed
-          ? null
-          : () => showNeuSheet<void>(
-                context: context,
-                builder: (_) => GitHubPushSheet(
-                  projectId: projectId,
-                  suggestedRepo: repoSlug(project!.name, project!.ordinal.toInt()),
-                  suggestedMessage: project!.name.trim().isEmpty
-                      ? 'Update from VON'
-                      : project!.name.trim(),
-                ),
-              ),
+      tooltip: 'Sync this VON with GitHub',
+      onPressed: () => showNeuSheet<void>(
+        context: context,
+        builder: (_) => GitHubPushSheet(
+          projectId: projectId,
+          suggestedRepo: repoSlug(project!.name, project!.ordinal.toInt()),
+          suggestedMessage: project!.name.trim().isEmpty
+              ? 'Update from VON'
+              : project!.name.trim(),
+        ),
+      ),
     );
   }
 }

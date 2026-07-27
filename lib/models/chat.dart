@@ -276,7 +276,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
       'run_python' => path == null ? 'Ran Python' : 'Ran $path',
       'run_wasm' => 'Ran ${path ?? 'a module'}',
       'start_preview' => 'Started live preview',
-      'git_push' => 'Published to ${map?['repo'] as String? ?? 'GitHub'}',
+      'git_push' => 'Synced with ${map?['repo'] as String? ?? 'GitHub'}',
+      'git_pull' => 'Pulled ${map?['repo'] as String? ?? 'from GitHub'}',
       'task_complete' => 'Finished',
       _ => tool,
     };

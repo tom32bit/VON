@@ -10,12 +10,11 @@ import '../../services/core_api.dart';
 import '../widgets/feedback.dart';
 import '../widgets/neumorphic.dart';
 
-/// Publishes a VON to GitHub as a single commit.
+/// Syncs a VON with a GitHub branch.
 ///
-/// Everything the push needs is on one screen — repository, branch, message,
-/// visibility — because the alternative is a wizard, and this is three fields
-/// with sensible defaults. The user can press Publish without touching any of
-/// them.
+/// "Sync" rather than "push" is the honest word: the merge can change the VON
+/// as well as the repository, and a sheet that only ever said "publish" would
+/// be hiding half of what it does.
 class GitHubPushSheet extends ConsumerStatefulWidget {
   const GitHubPushSheet({
     super.key,
@@ -40,9 +39,12 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
   late final _message = TextEditingController(text: widget.suggestedMessage);
 
   bool _private = true;
-  bool _pushing = false;
+  bool _busy = false;
   String _stage = '';
   String? _error;
+
+  /// Set when the failure was a merge conflict, which has its own advice.
+  bool _conflicted = false;
   GitHubPushEventDto? _result;
   StreamSubscription<GitHubPushEventDto>? _subscription;
 
@@ -55,27 +57,37 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
     super.dispose();
   }
 
-  void _push() {
+  String get _branchOrMain =>
+      _branch.text.trim().isEmpty ? 'main' : _branch.text.trim();
+
+  void _run({required bool pullOnly}) {
     final repo = _repo.text.trim();
-    if (repo.isEmpty || _pushing) return;
+    if (repo.isEmpty || _busy) return;
 
     setState(() {
-      _pushing = true;
+      _busy = true;
       _error = null;
+      _conflicted = false;
       _result = null;
       _stage = 'Starting';
     });
 
-    _subscription = ref
-        .read(coreApiProvider)
-        .pushToGithub(
-          projectId: widget.projectId,
-          repo: repo,
-          branch: _branch.text.trim().isEmpty ? 'main' : _branch.text.trim(),
-          message: _message.text.trim(),
-          private: _private,
-        )
-        .listen(
+    final api = ref.read(coreApiProvider);
+    final stream = pullOnly
+        ? api.pullFromGithub(
+            projectId: widget.projectId,
+            repo: repo,
+            branch: _branchOrMain,
+          )
+        : api.pushToGithub(
+            projectId: widget.projectId,
+            repo: repo,
+            branch: _branchOrMain,
+            message: _message.text.trim(),
+            private: _private,
+          );
+
+    _subscription = stream.listen(
       (event) {
         if (!mounted) return;
         switch (event.kind) {
@@ -84,12 +96,19 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
           case 'done':
             setState(() {
               _result = event;
-              _pushing = false;
+              _busy = false;
             });
+            // A sync writes into the sandbox, so the Files tab is stale.
+            if (event.pulled.isNotEmpty || event.removedLocally.isNotEmpty) {
+              ref
+                ..invalidate(fileTreeProvider(widget.projectId))
+                ..invalidate(sandboxUsageProvider(widget.projectId));
+            }
           case 'failed':
             setState(() {
               _error = event.detail;
-              _pushing = false;
+              _conflicted = event.errorKind == 'conflict';
+              _busy = false;
             });
         }
       },
@@ -100,12 +119,12 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
         if (mounted && _error == null) {
           setState(() {
             _error = e.toString();
-            _pushing = false;
+            _busy = false;
           });
         }
       },
       onDone: () {
-        if (mounted && _pushing) setState(() => _pushing = false);
+        if (mounted && _busy) setState(() => _busy = false);
       },
     );
   }
@@ -119,7 +138,7 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          result == null ? 'Publish to GitHub' : 'Published',
+          result == null ? 'Sync with GitHub' : 'Synced',
           style: VonText.title,
         ),
         const SizedBox(height: VonSpace.sm),
@@ -128,8 +147,9 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
           _Success(result: result)
         else ...[
           Text(
-            'Everything in this VON goes up as one commit. Secrets, '
-            '`node_modules` and caches are left behind automatically.',
+            'This is a merge, not an overwrite. Files added on GitHub since '
+            'the last sync are brought into this VON; files deleted here are '
+            'deleted there. Secrets and caches are left out automatically.',
             style: VonText.secondary,
           ),
           const SizedBox(height: VonSpace.lg),
@@ -138,7 +158,7 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
           NeuField(
             controller: _repo,
             hint: 'my-project or owner/my-project',
-            enabled: !_pushing,
+            enabled: !_busy,
           ),
           const SizedBox(height: VonSpace.xs),
           Text(
@@ -157,7 +177,7 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const _Label('Branch'),
-                    NeuField(controller: _branch, enabled: !_pushing),
+                    NeuField(controller: _branch, enabled: !_busy),
                   ],
                 ),
               ),
@@ -175,7 +195,7 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
                         child: NeuToggle(
                           value: _private,
                           onChanged:
-                              _pushing ? null : (v) => setState(() => _private = v),
+                              _busy ? null : (v) => setState(() => _private = v),
                         ),
                       ),
                     ),
@@ -191,11 +211,11 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
             controller: _message,
             maxLines: 3,
             minLines: 1,
-            enabled: !_pushing,
+            enabled: !_busy,
           ),
           const SizedBox(height: VonSpace.lg),
 
-          if (_pushing)
+          if (_busy)
             Row(
               children: [
                 const NeuPulsingDots(size: 5),
@@ -211,20 +231,108 @@ class _GitHubPushSheetState extends ConsumerState<GitHubPushSheet> {
               ],
             )
           else
-            NeuButton(
-              label: 'Publish',
-              icon: Icons.cloud_upload_outlined,
-              expand: true,
-              glow: true,
-              onPressed: _push,
+            Row(
+              children: [
+                // Pull alone is the way in to an existing repository: it takes
+                // the branch without committing anything, so there is no way to
+                // publish a VON by accident while exploring.
+                Expanded(
+                  child: NeuButton(
+                    label: 'Pull only',
+                    icon: Icons.south_rounded,
+                    tone: VonColors.textSecondary,
+                    expand: true,
+                    onPressed: () => _run(pullOnly: true),
+                  ),
+                ),
+                const SizedBox(width: VonSpace.md),
+                Expanded(
+                  child: NeuButton(
+                    label: 'Sync',
+                    icon: Icons.sync_rounded,
+                    expand: true,
+                    glow: true,
+                    onPressed: () => _run(pullOnly: false),
+                  ),
+                ),
+              ],
             ),
 
           if (_error != null) ...[
             const SizedBox(height: VonSpace.md),
-            NeuErrorBanner(message: _error!, onRetry: _push),
+            if (_conflicted)
+              _ConflictNotice(
+                message: _error!,
+                branch: _branchOrMain,
+                onUseBranch: (name) {
+                  _branch.text = name;
+                  _run(pullOnly: false);
+                },
+              )
+            else
+              NeuErrorBanner(
+                message: _error!,
+                onRetry: () => _run(pullOnly: false),
+              ),
           ],
         ],
       ],
+    );
+  }
+}
+
+/// Shown when the same file changed on both sides.
+///
+/// A retry button would be actively wrong here — the same call would fail the
+/// same way. What helps is a way out, so this offers the branch: both versions
+/// survive and GitHub's own review tools handle the reconciliation.
+class _ConflictNotice extends StatelessWidget {
+  const _ConflictNotice({
+    required this.message,
+    required this.branch,
+    required this.onUseBranch,
+  });
+
+  final String message;
+  final String branch;
+  final ValueChanged<String> onUseBranch;
+
+  @override
+  Widget build(BuildContext context) {
+    final suggestion = 'von/$branch-${DateTime.now().millisecondsSinceEpoch % 100000}';
+
+    return NeuSurface(
+      depth: NeuDepth.concave,
+      radius: VonRadius.medium,
+      borderColor: VonColors.warn,
+      borderWidth: 1,
+      padding: const EdgeInsets.all(VonSpace.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.call_split_rounded,
+                size: 16,
+                color: VonColors.warn,
+              ),
+              const SizedBox(width: VonSpace.sm),
+              Text('Changed in both places', style: VonText.heading),
+            ],
+          ),
+          const SizedBox(height: VonSpace.sm),
+          Text(message, style: VonText.secondary),
+          const SizedBox(height: VonSpace.md),
+          NeuButton(
+            label: 'Push to $suggestion instead',
+            icon: Icons.alt_route_rounded,
+            compact: true,
+            expand: true,
+            onPressed: () => onUseBranch(suggestion),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -236,14 +344,12 @@ class _Success extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final commitShown = result.commitUrl.isNotEmpty && !result.upToDate;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          '${result.filesPushed} file${result.filesPushed == 1 ? '' : 's'} '
-          'on ${result.repoFullName} · ${result.branch}',
-          style: VonText.secondary,
-        ),
+        Text(result.detail, style: VonText.secondary),
         if (result.createdRepo) ...[
           const SizedBox(height: VonSpace.xs),
           Text(
@@ -251,55 +357,63 @@ class _Success extends StatelessWidget {
             style: VonText.caption.copyWith(color: VonColors.accent),
           ),
         ],
-        const SizedBox(height: VonSpace.md),
 
-        // The URL is shown in full and copyable rather than opened: a phone
-        // browser handoff mid-flow loses the sheet, and the commit is the one
-        // thing worth keeping.
-        NeuSurface(
-          depth: NeuDepth.concave,
-          radius: VonRadius.medium,
-          padding: const EdgeInsets.all(VonSpace.md),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  result.commitUrl,
-                  style: VonText.mono.copyWith(fontSize: 11),
-                ),
-              ),
-              const SizedBox(width: VonSpace.sm),
-              NeuIconButton(
-                icon: Icons.copy_rounded,
-                size: 34,
-                iconSize: 15,
-                tooltip: 'Copy the commit URL',
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: result.commitUrl));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      backgroundColor: VonColors.bgElevated,
-                      content: Text('Copied.', style: VonText.body),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-
-        // Named rather than counted, so a file missing from the repo is never a
-        // surprise discovered later.
-        if (result.skipped.isNotEmpty) ...[
+        if (commitShown) ...[
           const SizedBox(height: VonSpace.md),
-          Text('Left out on purpose', style: VonText.heading),
-          const SizedBox(height: VonSpace.xs),
-          for (final reason in result.skipped)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text('· $reason', style: VonText.caption),
+          // The URL is shown in full and copyable rather than opened: a phone
+          // browser handoff mid-flow loses the sheet, and the commit is the one
+          // thing worth keeping.
+          NeuSurface(
+            depth: NeuDepth.concave,
+            radius: VonRadius.medium,
+            padding: const EdgeInsets.all(VonSpace.md),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    result.commitUrl,
+                    style: VonText.mono.copyWith(fontSize: 11),
+                  ),
+                ),
+                const SizedBox(width: VonSpace.sm),
+                NeuIconButton(
+                  icon: Icons.copy_rounded,
+                  size: 34,
+                  iconSize: 15,
+                  tooltip: 'Copy the commit URL',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: result.commitUrl));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        backgroundColor: VonColors.bgElevated,
+                        content: Text('Copied.', style: VonText.body),
+                      ),
+                    );
+                  },
+                ),
+              ],
             ),
+          ),
         ],
+
+        // A sync changes the VON too. Saying which files, rather than counting
+        // them, is what stops that being a surprise the next time the Files tab
+        // is opened.
+        _PathList(
+          title: 'Brought into this VON',
+          tone: VonColors.accent,
+          paths: result.pulled,
+        ),
+        _PathList(
+          title: 'Deleted on GitHub, so removed here',
+          tone: VonColors.danger,
+          paths: result.removedLocally,
+        ),
+        _PathList(
+          title: 'Left out on purpose',
+          tone: VonColors.textSecondary,
+          paths: result.skipped,
+        ),
 
         const SizedBox(height: VonSpace.lg),
         NeuButton(
@@ -308,6 +422,38 @@ class _Success extends StatelessWidget {
           onPressed: () => Navigator.of(context).pop(),
         ),
       ],
+    );
+  }
+}
+
+class _PathList extends StatelessWidget {
+  const _PathList({
+    required this.title,
+    required this.tone,
+    required this.paths,
+  });
+
+  final String title;
+  final Color tone;
+  final List<String> paths;
+
+  @override
+  Widget build(BuildContext context) {
+    if (paths.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: VonSpace.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: VonText.caption.copyWith(color: tone)),
+          const SizedBox(height: VonSpace.xs),
+          for (final path in paths)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text('· $path', style: VonText.mono.copyWith(fontSize: 10)),
+            ),
+        ],
+      ),
     );
   }
 }

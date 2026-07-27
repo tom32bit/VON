@@ -162,8 +162,20 @@ class CoreApi {
   Future<rust_github.GitHubAccountDto> connectGithub(String token) =>
       rust_github.connectGithub(token: token);
 
-  /// Publishes a VON as one commit. The stream always ends with a `done` or
-  /// `failed` event.
+  /// Brings a branch into a VON without pushing anything back.
+  Stream<rust_github.GitHubPushEventDto> pullFromGithub({
+    required String projectId,
+    required String repo,
+    String branch = 'main',
+  }) =>
+      rust_github.pullProjectFromGithub(
+        projectId: projectId,
+        repo: repo,
+        branch: branch,
+      );
+
+  /// Syncs a VON with a branch and commits the merged result. The stream always
+  /// ends with a `done` or `failed` event.
   Stream<rust_github.GitHubPushEventDto> pushToGithub({
     required String projectId,
     required String repo,

@@ -37,8 +37,9 @@ number jump around on every edit.
 All of `PRD.md`, `Design.md`, and `SWE.md` is implemented: the sandbox, the
 agent loop, local (`llama.cpp`) and cloud inference, WASM and Python execution,
 the thermal governor, the localhost preview server, and all five screens.
-Beyond the spec, a project can be published to GitHub as a real commit — from
-the Workspace tab, or by asking for it in the chat.
+Beyond the spec, a project syncs with GitHub as a real commit — a three-way
+merge against the branch, from the Workspace tab or by asking for it in the
+chat.
 
 It was authored on a machine with no Flutter, Rust, or Android SDK, so CI is
 what proves it builds. The Rust core compiles and all 78 tests pass; the APK is
@@ -252,14 +253,37 @@ right default for an agent everywhere else.
 The Sandbox Explorer renders an indented list anyway, and recursion across the
 bridge buys nothing.
 
-**`rust/src/github.rs`** — publishing. It speaks GitHub's Git Data API rather
-than the git wire protocol, because the alternatives are libgit2 (a C dependency
-to cross-compile for every ABI, with its own TLS stack) and gitoxide (which
-cannot push yet). A push is one commit holding the sandbox as it stands, built
-with no `base_tree`, so a file the agent deleted disappears from the repo. The
-filter for `.env`, `node_modules`, private keys and friends lives here rather
-than in the sandbox: publishing is the single moment a scratch directory becomes
-public, and anything held back is named in the result.
+**`rust/src/github.rs`** — publishing, and the one piece of real distributed-
+systems reasoning in the app. It speaks GitHub's Git Data API rather than the
+git wire protocol, because the alternatives are libgit2 (a C dependency to
+cross-compile for every ABI, with its own TLS stack) and gitoxide (which cannot
+push yet).
+
+A sync is a **three-way merge at file granularity**. `github_links` records the
+tree VON last pushed for a project, and that base is what makes the interesting
+cases decidable: without it, a file present on the remote and absent locally is
+equally consistent with "the user deleted it" and "somebody else added it", and
+guessing wrong destroys work either way. With it, changed-here uploads,
+changed-there is written back into the sandbox, deleted-here deletes, and
+changed-in-both refuses by name instead of picking a side. Granularity is the
+file, not the line — diff3 on a phone would turn every awkward case into a
+half-merged file, which is worse than being told two people edited the same
+thing.
+
+Two consequences worth knowing. Blob ids are content-addressed and computed
+locally, so a file GitHub already has is never uploaded again — a one-line
+change costs one blob, not the project. And the ref update is *not* forced: the
+commit's parent is the head read at the start of the sync, so a fast-forward is
+guaranteed unless somebody pushed in between, which is exactly the case worth
+hearing about.
+
+The filter for `.env`, `node_modules`, private keys and friends lives here
+rather than in the sandbox — publishing is the single moment a scratch directory
+becomes public. Filtered paths sit outside the merge entirely: they pass through
+from the remote untouched and are never written into the sandbox, because
+treating "absent locally because we filtered it" as a deletion would erase a
+`.env` somebody deliberately committed, on the *second* sync rather than the
+first.
 
 ---
 
@@ -279,11 +303,18 @@ public, and anything held back is named in the result.
   hardware, which CI cannot provide.
 - **Model download URLs are pinned to specific HuggingFace paths.** They rot.
   There is no fallback mirror.
-- **GitHub push is one-way.** VON publishes; it does not clone, pull, or merge.
-  A repository edited elsewhere and then pushed to from VON is overwritten on
-  that branch, because there is no local history to fast-forward from.
-- **The whole sandbox is held in memory during a push.** The tree has to be
-  posted as a unit; the sandbox quota is what keeps that bounded.
+- **Merging is per-file, never per-line.** Two people editing the same file is
+  reported as a conflict and refused, even when the edits would not have
+  overlapped. Deliberate: see the note on `github.rs` above.
+- **A sync holds the changed files in memory.** The tree has to be posted as a
+  unit; the sandbox quota is what keeps that bounded.
+- **Incoming files are fetched one blob at a time.** Importing a large
+  repository is one request per file. A tarball fetch would be one request
+  total, but needs a second code path and `tar` support that isn't in the
+  dependency set.
+- **A truncated tree listing refuses rather than guesses.** GitHub truncates the
+  recursive listing for very large repositories, and a truncated answer reads as
+  "those files do not exist" — which the merge would act on as deletions.
 
 ---
 
