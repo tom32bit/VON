@@ -167,8 +167,8 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 /// How long this execution may run, given what the device can currently afford.
 ///
 /// A budget the agent asked for is honoured up to a ceiling that moves with the
-/// device: a cool phone with charge to spare gets the full two minutes, a warm
-/// or nearly flat one gets twenty seconds. The agent is told which it got, so a
+/// device: a cool phone with charge to spare gets the full minute, a warm or
+/// nearly flat one gets twenty seconds. The agent is told which it got, so a
 /// timeout on a hot device reads as "the device is busy" rather than "your code
 /// is too slow".
 fn effective_timeout(requested: Option<u64>) -> u64 {
@@ -179,7 +179,7 @@ fn timeout_ceiling() -> u64 {
     let stats = governor::stats();
 
     // Anything above Normal means the SoC is already shedding heat it cannot
-    // lose fast enough; a two-minute burn is how a warm phone becomes a hot one.
+    // lose fast enough; a full-budget burn is how a warm phone becomes a hot one.
     if stats.thermal > governor::ThermalState::Normal {
         return THROTTLED_TIMEOUT_MS;
     }
@@ -193,8 +193,13 @@ fn timeout_ceiling() -> u64 {
     MAX_TIMEOUT_MS
 }
 
-/// Shared preflight: refuse to start work the device cannot afford.
-fn preflight() -> Result<()> {
+/// Refuses a Python run while an earlier one is still going.
+///
+/// Only Python. A WASM module that overruns is genuinely stopped — Wasmtime's
+/// epoch interruption unwinds the guest — so nothing accumulates there. A
+/// RustPython thread cannot be stopped and is left to finish, which is
+/// survivable once and compounding after that.
+fn no_interpreter_running() -> Result<()> {
     if LIVE_INTERPRETERS.load(Ordering::SeqCst) > 0 {
         return Err(VonError::Throttled(
             "a previous run is still going — it overran its time limit and cannot be stopped \
@@ -202,7 +207,11 @@ fn preflight() -> Result<()> {
                 .into(),
         ));
     }
+    Ok(())
+}
 
+/// Shared preflight: refuse to start work the device cannot afford.
+fn preflight() -> Result<()> {
     let stats = governor::stats();
     if stats.thermal >= governor::ThermalState::Severe {
         return Err(VonError::Throttled(format!(
@@ -654,6 +663,7 @@ pub fn run_python(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<ExecOutcome> {
     preflight()?;
+    no_interpreter_running()?;
     if code.trim().is_empty() {
         return Err(VonError::InvalidArgument("no code to run".into()));
     }
@@ -675,6 +685,9 @@ pub fn run_python_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The Python tests share one live-interpreter count: a thread from the
+    // previous test still winding down makes the next one refuse to start.
+    use serial_test::serial;
 
     fn sandbox() -> (tempfile::TempDir, Sandbox) {
         let dir = tempfile::tempdir().unwrap();
@@ -720,6 +733,7 @@ mod tests {
 
     #[cfg(feature = "python-exec")]
     #[test]
+    #[serial]
     fn python_captures_stdout() {
         let (_d, sb) = sandbox();
         let out = run_python(&sb, "print('hello from the sandbox')", Some(5_000), &mut |_| {}).unwrap();
@@ -742,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn python_reports_tracebacks_rather_than_erroring_out() {
         let (_d, sb) = sandbox();
         let out = run_python(&sb, "raise ValueError('boom')", Some(5_000), &mut |_| {}).unwrap();
