@@ -157,7 +157,7 @@ pub fn push_sandbox(
     };
 
     on_progress("Collecting files");
-    let (files, skipped) = collect(sandbox)?;
+    let Payload { files, skipped } = collect(sandbox)?;
     if files.is_empty() {
         return Err(VonError::InvalidArgument(
             "this VON has no files to publish yet".into(),
@@ -173,23 +173,25 @@ pub fn push_sandbox(
     let parent = head_commit(&token, &owner, &name, branch)?;
 
     let mut tree_entries = Vec::with_capacity(files.len());
-    for (index, (path, bytes)) in files.iter().enumerate() {
+    for (index, file) in files.iter().enumerate() {
         on_progress(&format!("Uploading {} of {}", index + 1, files.len()));
         let blob = request(
             &token,
             reqwest::Method::POST,
             &format!("/repos/{owner}/{name}/git/blobs"),
             Some(json!({
-                "content": base64::engine::general_purpose::STANDARD.encode(bytes),
+                "content": base64::engine::general_purpose::STANDARD.encode(&file.bytes),
                 "encoding": "base64",
             })),
         )?;
         let sha = blob
             .get("sha")
             .and_then(Value::as_str)
-            .ok_or_else(|| VonError::Other(format!("GitHub stored '{path}' but returned no sha")))?;
+            .ok_or_else(|| {
+                VonError::Other(format!("GitHub stored '{}' but returned no sha", file.path))
+            })?;
         tree_entries.push(json!({
-            "path": path,
+            "path": file.path,
             // 100644 for everything: a sandbox has no executables to speak of
             // and no way to record a mode, so claiming one would be a lie.
             "mode": "100644",
@@ -259,11 +261,23 @@ pub fn push_sandbox(
     })
 }
 
+/// One file on its way up.
+struct PublishFile {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+/// What a push will contain, and what it deliberately will not.
+struct Payload {
+    files: Vec<PublishFile>,
+    skipped: Vec<String>,
+}
+
 /// Reads the sandbox into memory, dropping what must not be published.
 ///
 /// Everything is held at once because the tree has to be posted as a unit;
 /// sandbox quotas keep that bounded to something a phone can hold.
-fn collect(sandbox: &Sandbox) -> Result<(Vec<(String, Vec<u8>)>, Vec<String>)> {
+fn collect(sandbox: &Sandbox) -> Result<Payload> {
     let mut files = Vec::new();
     let mut skipped = Vec::new();
 
@@ -286,9 +300,9 @@ fn collect(sandbox: &Sandbox) -> Result<(Vec<(String, Vec<u8>)>, Vec<String>)> {
             ));
             continue;
         }
-        files.push((path, bytes));
+        files.push(PublishFile { path, bytes });
     }
-    Ok((files, skipped))
+    Ok(Payload { files, skipped })
 }
 
 /// Returns `(owner/name, created)`, creating the repository if it is the user's
@@ -504,8 +518,9 @@ mod tests {
             .unwrap();
         sandbox.write_file("__pycache__/main.pyc", "junk").unwrap();
 
-        let (files, skipped) = collect(&sandbox).unwrap();
-        let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+        let payload = collect(&sandbox).unwrap();
+        let paths: Vec<&str> = payload.files.iter().map(|f| f.path.as_str()).collect();
+        let skipped = &payload.skipped;
 
         assert_eq!(paths, vec!["main.py", "src/app.js"]);
         assert_eq!(skipped.len(), 3, "skipped: {skipped:?}");
@@ -521,9 +536,9 @@ mod tests {
         sandbox.write_file("a/b/.env", "TOKEN=x").unwrap();
         sandbox.write_file("a/b/keep.txt", "fine").unwrap();
 
-        let (files, _) = collect(&sandbox).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "a/b/keep.txt");
+        let payload = collect(&sandbox).unwrap();
+        assert_eq!(payload.files.len(), 1);
+        assert_eq!(payload.files[0].path, "a/b/keep.txt");
     }
 
     #[test]
@@ -534,8 +549,13 @@ mod tests {
         sandbox.write_file(".env.example", "TOKEN=").unwrap();
         sandbox.write_file("environment.md", "notes").unwrap();
 
-        let (files, skipped) = collect(&sandbox).unwrap();
-        assert_eq!(files.len(), 2, "wrongly skipped: {skipped:?}");
+        let payload = collect(&sandbox).unwrap();
+        assert_eq!(
+            payload.files.len(),
+            2,
+            "wrongly skipped: {:?}",
+            payload.skipped
+        );
     }
 
     /// Matches sandbox.rs's own helper: the TempDir has to stay alive for the

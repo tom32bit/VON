@@ -266,7 +266,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   static String _summarise(String tool, Object? args) {
-    final path = args is Map<String, dynamic> ? args['path'] as String? : null;
+    final map = args is Map<String, dynamic> ? args : null;
+    final path = map?['path'] as String?;
     return switch (tool) {
       'write_file' => 'Wrote ${path ?? 'a file'}',
       'read_file' => 'Read ${path ?? 'a file'}',
@@ -275,6 +276,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       'run_python' => path == null ? 'Ran Python' : 'Ran $path',
       'run_wasm' => 'Ran ${path ?? 'a module'}',
       'start_preview' => 'Started live preview',
+      'git_push' => 'Published to ${map?['repo'] as String? ?? 'GitHub'}',
       'task_complete' => 'Finished',
       _ => tool,
     };
