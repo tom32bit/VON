@@ -629,7 +629,11 @@ class _GitHubCardState extends ConsumerState<_GitHubCard> {
                       icon: Icons.error_outline_rounded,
                       tone: VonColors.danger,
                     ),
-                  _ => const NeuPulsingDots(size: 5),
+                  AsyncLoading() => const NeuPulsingDots(size: 5),
+                  // Data that says "not connected" while a token is stored
+                  // shouldn't happen; show nothing rather than a spinner that
+                  // would never stop.
+                  _ => const SizedBox.shrink(),
                 },
             ],
           ),

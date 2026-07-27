@@ -22,7 +22,10 @@ pub struct GitHubAccountDto {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+/// `Default` is derived, unlike `AgentEventDto`'s: every field here really does
+/// start at its type's default, so writing the impl out by hand would be noise
+/// clippy is right to flag.
+#[derive(Debug, Clone, Default)]
 pub struct GitHubPushEventDto {
     /// `progress` | `done` | `failed`
     pub kind: String,
@@ -37,23 +40,6 @@ pub struct GitHubPushEventDto {
     /// Files deliberately left out, each with its reason.
     pub skipped: Vec<String>,
     pub error_kind: String,
-}
-
-impl Default for GitHubPushEventDto {
-    fn default() -> Self {
-        Self {
-            kind: String::new(),
-            detail: String::new(),
-            repo_full_name: String::new(),
-            branch: String::new(),
-            commit_sha: String::new(),
-            commit_url: String::new(),
-            files_pushed: 0,
-            created_repo: false,
-            skipped: Vec::new(),
-            error_kind: String::new(),
-        }
-    }
 }
 
 /// Stores a personal access token after checking it works. An empty string
