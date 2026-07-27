@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn an_empty_sandbox_says_so_rather_than_listing_nothing() {
-        assert!(system_prompt(&ctx("general", Provider::Anthropic, &[])).contains("sandbox is empty"));
+        assert!(system_prompt(&ctx("general", Provider::Anthropic, &[])).contains("this VON is empty"));
     }
 
     #[test]

@@ -175,24 +175,20 @@ pub fn execute(sandbox: &Sandbox, project_id: &str, call: &ToolCall) -> Executio
     let mut effects = ToolEffects::default();
 
     let outcome = match call.name.as_str() {
-        "write_file" => write_file(sandbox, &call.arguments).map(|text| {
+        "write_file" => write_file(sandbox, &call.arguments).inspect(|_| {
             effects.files_changed = true;
-            text
         }),
         "read_file" => read_file(sandbox, &call.arguments),
         "list_files" => list_files(sandbox),
-        "delete_file" => delete_file(sandbox, &call.arguments).map(|text| {
+        "delete_file" => delete_file(sandbox, &call.arguments).inspect(|_| {
             effects.files_changed = true;
-            text
         }),
-        "run_python" => run_python(sandbox, &call.arguments).map(|text| {
+        "run_python" => run_python(sandbox, &call.arguments).inspect(|_| {
             // Scripts routinely write output files.
             effects.files_changed = true;
-            text
         }),
-        "run_wasm" => run_wasm(sandbox, &call.arguments).map(|text| {
+        "run_wasm" => run_wasm(sandbox, &call.arguments).inspect(|_| {
             effects.files_changed = true;
-            text
         }),
         "start_preview" => start_preview(sandbox, project_id).map(|url| {
             effects.preview_url = Some(url.clone());

@@ -41,6 +41,12 @@ const CONTEXT_BUDGET_TOKENS: usize = 24_000;
 /// Consecutive transient provider failures tolerated before giving up.
 const MAX_RETRIES: usize = 3;
 
+// An unattended loop on someone's phone must stay bounded. Checked at compile
+// time rather than in a test, so raising either past the ceiling fails the
+// build instead of a test run.
+const _: () = assert!(MAX_STEPS <= 32);
+const _: () = assert!(MAX_RETRIES <= 5);
+
 /// What the UI renders. Mirrored into Dart by `flutter_rust_bridge`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
@@ -538,9 +544,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn step_limit_is_bounded_for_battery_safety() {
-        assert!(MAX_STEPS <= 32, "an unattended loop must stay bounded");
-        assert!(MAX_RETRIES <= 5);
-    }
 }

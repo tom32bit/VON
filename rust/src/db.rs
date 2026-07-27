@@ -150,15 +150,39 @@ pub struct ProjectRow {
     pub size_bytes: i64,
 }
 
-/// The number the next VON should carry.
+/// Claims the number the next VON will carry, advancing the counter.
 ///
-/// `MAX + 1` rather than `COUNT + 1`: counting would reuse the number of a
-/// deleted VON and silently rename an existing one.
-pub fn next_ordinal() -> Result<i64> {
+/// Backed by a persistent counter rather than `MAX(ordinal) + 1`. `MAX + 1`
+/// looks right but reuses a number as soon as the *newest* VON is deleted —
+/// delete VON 2 and the next one becomes VON 2 as well, which is precisely
+/// what a stable identity is meant to prevent.
+///
+/// Taking `max` against the live high-water mark is belt-and-braces for a
+/// missing or stale counter row.
+///
+/// Named "claim" because it has a side effect: calling it without then
+/// inserting a project burns that number. Gaps are expected and harmless.
+pub fn claim_next_ordinal() -> Result<i64> {
     with_db(|c| {
-        let max: Option<i64> =
-            c.query_row("SELECT MAX(ordinal) FROM projects", [], |r| r.get(0))?;
-        Ok(max.unwrap_or(0) + 1)
+        let stored: i64 = c
+            .query_row(
+                "SELECT CAST(v AS INTEGER) FROM settings WHERE k = 'von_ordinal_counter'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let highest: i64 = c.query_row("SELECT COALESCE(MAX(ordinal), 0) FROM projects", [], |r| {
+            r.get(0)
+        })?;
+
+        let next = stored.max(highest) + 1;
+        c.execute(
+            "INSERT INTO settings (k, v) VALUES ('von_ordinal_counter', ?1)
+             ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            params![next.to_string()],
+        )?;
+        Ok(next)
     })
 }
 
@@ -637,16 +661,16 @@ mod tests {
             size_bytes: 0,
         };
 
-        let first = next_ordinal().unwrap();
+        let first = claim_next_ordinal().unwrap();
         insert_project(&make("o1", first)).unwrap();
-        let second = next_ordinal().unwrap();
+        let second = claim_next_ordinal().unwrap();
         insert_project(&make("o2", second)).unwrap();
         assert_eq!(second, first + 1);
 
         // Deleting the newest VON must not hand its number to the next one —
         // otherwise two different projects share a name in the user's head.
         delete_project("o2").unwrap();
-        let third = next_ordinal().unwrap();
+        let third = claim_next_ordinal().unwrap();
         insert_project(&make("o3", third)).unwrap();
         assert_eq!(third, second + 1, "a deleted ordinal must leave a gap");
 

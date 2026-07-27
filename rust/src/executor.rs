@@ -399,7 +399,12 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
         use rustpython_vm as vm;
 
         let interpreter = vm::Interpreter::with_init(Default::default(), |vm| {
+            // Native modules (math, time, _sre …) and the frozen pure-Python
+            // half (io, json, encodings …). Both are needed: with only the
+            // former the VM cannot even initialise its codecs, and `import io`
+            // fails — which is what the agent's own output capture relies on.
             vm.add_native_modules(rustpython_stdlib::get_module_inits());
+            vm.add_frozen(rustpython_pylib::FROZEN_STDLIB);
         });
 
         interpreter.enter(|vm| {

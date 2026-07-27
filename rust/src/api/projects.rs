@@ -42,7 +42,7 @@ pub fn create_project(
 
     let row = db::ProjectRow {
         id: id.clone(),
-        ordinal: db::next_ordinal().map_err(VonException::from)?,
+        ordinal: db::claim_next_ordinal().map_err(VonException::from)?,
         name,
         description,
         kind,

@@ -335,7 +335,7 @@ pub async fn download_model(
     let mut received = if resuming { resume_from } else { 0 };
     let total = response
         .content_length()
-        .map(|len| received + len as u64)
+        .map(|len| received + len)
         .unwrap_or(row.size_bytes.max(0) as u64);
 
     let mut file = if resuming {

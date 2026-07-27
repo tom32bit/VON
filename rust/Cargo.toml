@@ -19,7 +19,7 @@ local-llm = ["dep:llama-cpp-2"]
 # Wasmtime-backed execution of agent-authored .wasm modules.
 wasm-exec = ["dep:wasmtime", "dep:wasmtime-wasi"]
 # Embedded RustPython interpreter for agent-authored Python.
-python-exec = ["dep:rustpython-vm", "dep:rustpython-stdlib"]
+python-exec = ["dep:rustpython-vm", "dep:rustpython-stdlib", "dep:rustpython-pylib"]
 
 [dependencies]
 flutter_rust_bridge = "=2.7.1"
@@ -70,6 +70,12 @@ rustpython-vm = { version = "0.4", optional = true, default-features = false, fe
     "freeze-stdlib",
 ] }
 rustpython-stdlib = { version = "0.4", optional = true, default-features = false }
+# Supplies the *pure-Python* half of the standard library as frozen modules.
+# rustpython-stdlib only registers the native ones, so without this `import io`
+# fails and the VM prints "encodings initialization failed" on startup.
+rustpython-pylib = { version = "0.4", optional = true, default-features = false, features = [
+    "freeze-stdlib",
+] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # The thermal API is resolved with dlsym at runtime (see governor.rs), so
