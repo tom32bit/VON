@@ -34,6 +34,13 @@ pub const MAX_TIMEOUT_MS: u64 = 120_000;
 
 /// The ceiling when the device is warm, low on memory, or nearly flat.
 pub const THROTTLED_TIMEOUT_MS: u64 = 20_000;
+
+// Checked at compile time rather than in a test, matching the loop bounds in
+// the agent runner: a throttled ceiling above the healthy one would mean a hot
+// phone is allowed to work *longer*, which no test run should be needed to
+// catch.
+const _: () = assert!(THROTTLED_TIMEOUT_MS < MAX_TIMEOUT_MS);
+const _: () = assert!(DEFAULT_TIMEOUT_MS <= THROTTLED_TIMEOUT_MS);
 /// Captured output is truncated to this before going into the model's context —
 /// a runaway print loop must not blow the context window.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
@@ -734,7 +741,6 @@ mod tests {
         // Nothing has polled the governor in a test process, so the stats are
         // the neutral defaults and the full ceiling applies.
         assert_eq!(timeout_ceiling(), MAX_TIMEOUT_MS);
-        assert!(THROTTLED_TIMEOUT_MS < MAX_TIMEOUT_MS);
         // A request under the ceiling is honoured as asked.
         assert_eq!(effective_timeout(Some(45_000)), 45_000);
         // And the floor still holds.
