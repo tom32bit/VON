@@ -229,7 +229,16 @@ pub struct Execution {
 
 /// Runs one tool call. Never returns `Err` for a tool-level failure — those are
 /// folded into the observation so the agent can react to them.
-pub fn execute(sandbox: &Sandbox, project_id: &str, call: &ToolCall) -> Execution {
+///
+/// `on_output` carries a running program's stdout out to the UI while it is
+/// still running. Only `run_python` uses it; everything else here finishes far
+/// too quickly to be worth watching.
+pub fn execute(
+    sandbox: &Sandbox,
+    project_id: &str,
+    call: &ToolCall,
+    on_output: &mut dyn FnMut(&str),
+) -> Execution {
     let mut effects = ToolEffects::default();
 
     let outcome = match call.name.as_str() {
@@ -241,7 +250,7 @@ pub fn execute(sandbox: &Sandbox, project_id: &str, call: &ToolCall) -> Executio
         "delete_file" => delete_file(sandbox, &call.arguments).inspect(|_| {
             effects.files_changed = true;
         }),
-        "run_python" => run_python(sandbox, &call.arguments).inspect(|_| {
+        "run_python" => run_python(sandbox, &call.arguments, on_output).inspect(|_| {
             // Scripts routinely write output files.
             effects.files_changed = true;
         }),
@@ -393,14 +402,18 @@ fn delete_file(sandbox: &Sandbox, args: &Value) -> Result<String> {
     Ok(format!("Deleted {path}."))
 }
 
-fn run_python(sandbox: &Sandbox, args: &Value) -> Result<String> {
+fn run_python(
+    sandbox: &Sandbox,
+    args: &Value,
+    on_output: &mut dyn FnMut(&str),
+) -> Result<String> {
     let timeout = optional_timeout(args);
     let outcome = match (string_arg(args, "code"), string_arg(args, "path")) {
         (Some(code), _) if !code.trim().is_empty() => {
-            executor::run_python(sandbox, &code, timeout)?
+            executor::run_python(sandbox, &code, timeout, on_output)?
         }
         (_, Some(path)) if !path.trim().is_empty() => {
-            executor::run_python_file(sandbox, &path, timeout)?
+            executor::run_python_file(sandbox, &path, timeout, on_output)?
         }
         _ => {
             return Err(VonError::InvalidArgument(
@@ -567,6 +580,11 @@ mod tests {
         (dir, sb)
     }
 
+    /// `execute` with the output sink the tests never look at.
+    fn run(sb: &Sandbox, call: &ToolCall) -> Execution {
+        execute(sb, "p", call, &mut |_| {})
+    }
+
     fn call(name: &str, args: Value) -> ToolCall {
         ToolCall {
             id: "call-1".into(),
@@ -579,18 +597,18 @@ mod tests {
     #[test]
     fn write_then_read_round_trips() {
         let (_d, sb) = setup();
-        let write = execute(&sb, "p", &call("write_file", json!({"path":"a.py","content":"x=1"})));
+        let write = run(&sb, &call("write_file", json!({"path":"a.py","content":"x=1"})));
         assert!(!write.result.is_error);
         assert!(write.effects.files_changed);
 
-        let read = execute(&sb, "p", &call("read_file", json!({"path":"a.py"})));
+        let read = run(&sb, &call("read_file", json!({"path":"a.py"})));
         assert!(read.result.content.contains("x=1"));
     }
 
     #[test]
     fn escaping_the_sandbox_returns_an_instructional_observation() {
         let (_d, sb) = setup();
-        let out = execute(&sb, "p", &call("write_file", json!({"path":"../evil","content":"x"})));
+        let out = run(&sb, &call("write_file", json!({"path":"../evil","content":"x"})));
         assert!(out.result.is_error);
         // The agent must learn the rule, not just that it failed.
         assert!(out.result.content.contains("relative to the project root"));
@@ -599,7 +617,7 @@ mod tests {
     #[test]
     fn an_unknown_tool_lists_the_real_ones() {
         let (_d, sb) = setup();
-        let out = execute(&sb, "p", &call("rm_rf", json!({})));
+        let out = run(&sb, &call("rm_rf", json!({})));
         assert!(out.result.is_error);
         assert!(out.result.content.contains("write_file"));
     }
@@ -607,7 +625,7 @@ mod tests {
     #[test]
     fn missing_required_arguments_are_reported_clearly() {
         let (_d, sb) = setup();
-        let out = execute(&sb, "p", &call("read_file", json!({})));
+        let out = run(&sb, &call("read_file", json!({})));
         assert!(out.result.is_error);
         assert!(out.result.content.contains("'path' argument is required"));
     }
@@ -615,7 +633,7 @@ mod tests {
     #[test]
     fn task_complete_reports_the_summary_as_an_effect() {
         let (_d, sb) = setup();
-        let out = execute(&sb, "p", &call("task_complete", json!({"summary":"Built it."})));
+        let out = run(&sb, &call("task_complete", json!({"summary":"Built it."})));
         assert_eq!(out.effects.completed.as_deref(), Some("Built it."));
         assert!(!out.result.is_error);
     }
@@ -623,7 +641,7 @@ mod tests {
     #[test]
     fn preview_requires_an_index_html() {
         let (_d, sb) = setup();
-        let out = execute(&sb, "p", &call("start_preview", json!({})));
+        let out = run(&sb, &call("start_preview", json!({})));
         assert!(out.result.is_error);
         assert!(out.result.content.contains("index.html"));
     }
@@ -631,7 +649,7 @@ mod tests {
     #[test]
     fn listing_an_empty_project_says_so() {
         let (_d, sb) = setup();
-        let out = execute(&sb, "p", &call("list_files", json!({})));
+        let out = run(&sb, &call("list_files", json!({})));
         assert!(out.result.content.contains("empty"));
     }
 

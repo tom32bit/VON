@@ -339,7 +339,19 @@ fn run_inner(options: &RunOptions, emit: &mut dyn FnMut(AgentEvent)) -> Result<(
                 summary: summary.clone(),
             });
 
-            let execution = tools::execute(&sandbox, project_id, call);
+            // Forwarded to the phase line as the program prints it. Only the
+            // last line is shown — the full output arrives as the observation
+            // anyway, and the point here is to prove the run is alive, not to
+            // duplicate it.
+            let execution = tools::execute(&sandbox, project_id, call, &mut |chunk| {
+                let Some(line) = chunk.lines().rev().find(|l| !l.trim().is_empty()) else {
+                    return;
+                };
+                emit(AgentEvent::Phase {
+                    phase: "executing".into(),
+                    detail: line.chars().take(120).collect(),
+                });
+            });
 
             emit(AgentEvent::ToolFinished {
                 call_id: call.id.clone(),

@@ -23,8 +23,17 @@ use crate::sandbox::Sandbox;
 pub const MAX_WASM_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 /// Default wall-clock budget for one execution.
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
-/// Absolute ceiling the agent may request.
-pub const MAX_TIMEOUT_MS: u64 = 30_000;
+/// The most any single execution may be given, on a device with room to spare.
+///
+/// Two minutes rather than the old flat thirty seconds. Thirty was chosen to
+/// protect the battery, which is the right instinct and the wrong mechanism —
+/// it charged a cold, plugged-in flagship the same as a hot budget phone, and
+/// killed legitimate work on both. The governor already knows the difference,
+/// so the ceiling asks it.
+pub const MAX_TIMEOUT_MS: u64 = 120_000;
+
+/// The ceiling when the device is warm, low on memory, or nearly flat.
+pub const THROTTLED_TIMEOUT_MS: u64 = 20_000;
 /// Captured output is truncated to this before going into the model's context —
 /// a runaway print loop must not blow the context window.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
@@ -111,8 +120,33 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
+/// How long this execution may run, given what the device can currently afford.
+///
+/// A budget the agent asked for is honoured up to a ceiling that moves with the
+/// device: a cool phone with charge to spare gets the full two minutes, a warm
+/// or nearly flat one gets twenty seconds. The agent is told which it got, so a
+/// timeout on a hot device reads as "the device is busy" rather than "your code
+/// is too slow".
 fn effective_timeout(requested: Option<u64>) -> u64 {
-    requested.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(100, MAX_TIMEOUT_MS)
+    requested.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(100, timeout_ceiling())
+}
+
+fn timeout_ceiling() -> u64 {
+    let stats = governor::stats();
+
+    // Anything above Normal means the SoC is already shedding heat it cannot
+    // lose fast enough; a two-minute burn is how a warm phone becomes a hot one.
+    if stats.thermal > governor::ThermalState::Normal {
+        return THROTTLED_TIMEOUT_MS;
+    }
+    if stats.available_ram_mb > 0 && stats.available_ram_mb < 400 {
+        return THROTTLED_TIMEOUT_MS;
+    }
+    // -1 means the platform did not tell us, which is not the same as flat.
+    if stats.battery_pct >= 0 && stats.battery_pct < 20 {
+        return THROTTLED_TIMEOUT_MS;
+    }
+    MAX_TIMEOUT_MS
 }
 
 /// Shared preflight: refuse to start work the device cannot afford.
@@ -320,7 +354,45 @@ mod python_backend {
     /// common case, which is far more useful than an opaque kill.
     const PRELUDE: &str = r#"
 import sys, io, time
-__af_out = io.StringIO()
+
+class __AfTee:
+    """Keeps the buffer the epilogue reads, and mirrors to a file as it goes.
+
+    The mirror is what makes a long run visible: the host tails that file while
+    the interpreter is still working, so output reaches the screen when it is
+    printed rather than when the program ends. Written in Python rather than as
+    a native hook because it needs no interop at all — the flush is the whole
+    mechanism.
+    """
+
+    def __init__(self, path):
+        self.buf = io.StringIO()
+        try:
+            self._mirror = open(path, "w")
+        except Exception:
+            self._mirror = None
+
+    def write(self, s):
+        self.buf.write(s)
+        if self._mirror is not None:
+            try:
+                self._mirror.write(s)
+                self._mirror.flush()
+            except Exception:
+                self._mirror = None
+        return len(s)
+
+    def flush(self):
+        if self._mirror is not None:
+            try:
+                self._mirror.flush()
+            except Exception:
+                self._mirror = None
+
+    def getvalue(self):
+        return self.buf.getvalue()
+
+__af_out = __AfTee(__AF_MIRROR__)
 __af_err = io.StringIO()
 sys.stdout = __af_out
 sys.stderr = __af_err
@@ -337,11 +409,23 @@ sys.settrace(None)
 __af_result = (__af_out.getvalue(), __af_err.getvalue())
 "#;
 
-    pub fn run(sandbox: &Sandbox, code: &str, timeout_ms: u64) -> Result<ExecOutcome> {
+    pub fn run(
+        sandbox: &Sandbox,
+        code: &str,
+        timeout_ms: u64,
+        on_output: &mut dyn FnMut(&str),
+    ) -> Result<ExecOutcome> {
         let timeout_s = timeout_ms as f64 / 1000.0;
+
+        // Deliberately outside the sandbox: it is scaffolding, and a file that
+        // turns up in the user's project and in `list_files` because they ran
+        // something is a leak, not a feature.
+        let mirror = std::env::temp_dir().join(format!("von-run-{}.log", uuid::Uuid::new_v4()));
         let program = format!(
             "{}\ntry:\n{}\nexcept SystemExit as __af_e:\n    __af_exit = __af_e.code or 0\nexcept BaseException:\n    import traceback; traceback.print_exc(); __af_exit = 1\nelse:\n    __af_exit = 0\n{}",
-            PRELUDE.replace("__AF_TIMEOUT_S__", &timeout_s.to_string()),
+            PRELUDE
+                .replace("__AF_TIMEOUT_S__", &timeout_s.to_string())
+                .replace("__AF_MIRROR__", &format!("{:?}", mirror.to_string_lossy())),
             indent(code),
             EPILOGUE
         );
@@ -362,7 +446,30 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
             })
             .map_err(|e| VonError::Execution(e.to_string()))?;
 
-        match rx.recv_timeout(Duration::from_millis(timeout_ms + 500)) {
+        // Polled rather than waited on, so output can be forwarded while the
+        // program is still running. Without this a two-minute run is a
+        // two-minute blank screen, which is the same complaint as a model that
+        // thinks in silence.
+        let deadline = Duration::from_millis(timeout_ms + 500);
+        let mut sent = 0usize;
+        let outcome = loop {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(result) => {
+                    tail(&mirror, &mut sent, on_output);
+                    break Ok(result);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break Err(()),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    tail(&mirror, &mut sent, on_output);
+                    if started.elapsed() >= deadline {
+                        break Err(());
+                    }
+                }
+            }
+        };
+        let _ = std::fs::remove_file(&mirror);
+
+        match outcome {
             Ok((stdout, stderr, exit_code)) => {
                 let (stdout, t1) = truncate(stdout);
                 let (stderr, t2) = truncate(stderr);
@@ -376,7 +483,7 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
                     engine: "python".into(),
                 })
             }
-            Err(_) => {
+            Err(()) => {
                 // The interpreter thread is detached and still running. It holds
                 // no locks the rest of the app needs, and the governor will see
                 // the CPU load and throttle; a hard kill would risk leaving the
@@ -470,6 +577,31 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
             .unwrap_or_default()
     }
 
+    /// Forwards whatever the program has printed since the last look.
+    ///
+    /// Reads by byte offset rather than watching for changes: the file is
+    /// append-only, nothing else writes to it, and a missing file simply means
+    /// the program has not printed yet.
+    fn tail(path: &std::path::Path, sent: &mut usize, on_output: &mut dyn FnMut(&str)) {
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return;
+        };
+        if contents.len() <= *sent {
+            return;
+        }
+        // Resume on a character boundary; a multi-byte character can straddle
+        // two flushes.
+        let mut from = *sent;
+        while from < contents.len() && !contents.is_char_boundary(from) {
+            from += 1;
+        }
+        let fresh = &contents[from..];
+        if !fresh.is_empty() {
+            on_output(fresh);
+        }
+        *sent = contents.len();
+    }
+
     /// The agent's code goes inside a `try:` block, so it needs indenting.
     fn indent(code: &str) -> String {
         code.lines()
@@ -482,7 +614,12 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
 #[cfg(not(feature = "python-exec"))]
 mod python_backend {
     use super::*;
-    pub fn run(_: &Sandbox, _: &str, _: u64) -> Result<ExecOutcome> {
+    pub fn run(
+        _: &Sandbox,
+        _: &str,
+        _: u64,
+        _: &mut dyn FnMut(&str),
+    ) -> Result<ExecOutcome> {
         Err(VonError::Execution(
             "this build was compiled without the python-exec feature".into(),
         ))
@@ -504,17 +641,23 @@ pub fn run_wasm(
 }
 
 /// Runs Python source in the embedded interpreter.
+///
+/// `on_output` receives stdout as the program produces it, not at the end. A
+/// run may now last two minutes, and two minutes of blank screen is the same
+/// failure as a model that thinks in silence — the work is happening and the
+/// user has no way to tell.
 pub fn run_python(
     sandbox: &Sandbox,
     code: &str,
     timeout_ms: Option<u64>,
+    on_output: &mut dyn FnMut(&str),
 ) -> Result<ExecOutcome> {
     preflight()?;
     if code.trim().is_empty() {
         return Err(VonError::InvalidArgument("no code to run".into()));
     }
     let _guard = governor::begin_inference();
-    python_backend::run(sandbox, code, effective_timeout(timeout_ms))
+    python_backend::run(sandbox, code, effective_timeout(timeout_ms), on_output)
 }
 
 /// Runs a Python file already written into the sandbox.
@@ -522,9 +665,10 @@ pub fn run_python_file(
     sandbox: &Sandbox,
     rel_path: &str,
     timeout_ms: Option<u64>,
+    on_output: &mut dyn FnMut(&str),
 ) -> Result<ExecOutcome> {
     let code = sandbox.read_file(rel_path)?;
-    run_python(sandbox, &code, timeout_ms)
+    run_python(sandbox, &code, timeout_ms, on_output)
 }
 
 #[cfg(test)]
@@ -551,7 +695,9 @@ mod tests {
     fn timeout_is_clamped_to_sane_bounds() {
         assert_eq!(effective_timeout(None), DEFAULT_TIMEOUT_MS);
         assert_eq!(effective_timeout(Some(0)), 100);
-        assert_eq!(effective_timeout(Some(10_000_000)), MAX_TIMEOUT_MS);
+        // The ceiling moves with the device, so assert against what it
+        // currently is rather than a constant the governor may have lowered.
+        assert_eq!(effective_timeout(Some(10_000_000)), timeout_ceiling());
     }
 
     #[test]
@@ -575,16 +721,30 @@ mod tests {
     #[test]
     fn python_captures_stdout() {
         let (_d, sb) = sandbox();
-        let out = run_python(&sb, "print('hello from the sandbox')", Some(5_000)).unwrap();
+        let out = run_python(&sb, "print('hello from the sandbox')", Some(5_000), &mut |_| {}).unwrap();
         assert!(out.stdout.contains("hello from the sandbox"), "{out:?}");
         assert_eq!(out.exit_code, 0);
     }
 
     #[cfg(feature = "python-exec")]
+    /// A long budget is for a device that can afford one. The old flat 30s
+    /// charged a cold plugged-in flagship the same as a hot budget phone.
+    #[test]
+    fn the_timeout_ceiling_follows_the_device() {
+        // Nothing has polled the governor in a test process, so the stats are
+        // the neutral defaults and the full ceiling applies.
+        assert_eq!(timeout_ceiling(), MAX_TIMEOUT_MS);
+        assert!(THROTTLED_TIMEOUT_MS < MAX_TIMEOUT_MS);
+        // A request under the ceiling is honoured as asked.
+        assert_eq!(effective_timeout(Some(45_000)), 45_000);
+        // And the floor still holds.
+        assert_eq!(effective_timeout(Some(1)), 100);
+    }
+
     #[test]
     fn python_reports_tracebacks_rather_than_erroring_out() {
         let (_d, sb) = sandbox();
-        let out = run_python(&sb, "raise ValueError('boom')", Some(5_000)).unwrap();
+        let out = run_python(&sb, "raise ValueError('boom')", Some(5_000), &mut |_| {}).unwrap();
         assert_eq!(out.exit_code, 1);
         assert!(out.stderr.contains("ValueError"), "{out:?}");
     }
