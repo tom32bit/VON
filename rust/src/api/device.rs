@@ -4,7 +4,7 @@ use flutter_rust_bridge::frb;
 
 use crate::frb_generated::StreamSink;
 
-use crate::api::types::{ApiResult, DeviceProfileDto, DeviceStatsDto, VonException};
+use crate::api::types::{DeviceProfileDto, DeviceStatsDto, VonException};
 use crate::error::VonError;
 use crate::{db, governor};
 
@@ -13,7 +13,7 @@ use crate::{db, governor};
 /// Blocking for its full duration by design — the sheet shows a filling ring
 /// while it runs, and the measurement is only meaningful if nothing else in the
 /// app is competing for cores.
-pub fn run_device_benchmark(duration_ms: u64) -> ApiResult<DeviceProfileDto> {
+pub fn run_device_benchmark(duration_ms: u64) -> Result<DeviceProfileDto, VonException> {
     let profile = governor::run_benchmark(duration_ms);
 
     db::save_device_profile(&db::DeviceProfileRow {
@@ -38,7 +38,7 @@ pub fn device_stats() -> DeviceStatsDto {
 ///
 /// Emits only when something actually changed, so an idle screen isn't
 /// re-rendering a battery percentage every second.
-pub fn watch_device_stats(sink: StreamSink<DeviceStatsDto>) -> ApiResult<()> {
+pub fn watch_device_stats(sink: StreamSink<DeviceStatsDto>) -> Result<(), VonException> {
     std::thread::Builder::new()
         .name("von-stats-feed".into())
         .spawn(move || {
@@ -65,7 +65,7 @@ pub fn watch_device_stats(sink: StreamSink<DeviceStatsDto>) -> ApiResult<()> {
 ///
 /// Returns an empty string when the task is fine, or the reason it is blocked.
 /// `weight` is the task's demand: `light`, `moderate`, or `heavy`.
-pub fn check_task_allowed(weight: String, provider: String) -> ApiResult<String> {
+pub fn check_task_allowed(weight: String, provider: String) -> Result<String, VonException> {
     // Cloud work costs the device almost nothing; never block it on hardware.
     if provider != "local" {
         return Ok(String::new());

@@ -174,7 +174,7 @@ class _NeuShimmerCardState extends State<NeuShimmerCard>
             gradient: LinearGradient(
               begin: Alignment(-1 - 2 * (1 - _controller.value), -1),
               end: Alignment(1 + 2 * (1 - _controller.value), 1),
-              colors: [
+              colors: const [
                 VonColors.bgSurface,
                 VonColors.bgElevated,
                 VonColors.bgSurface,

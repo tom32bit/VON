@@ -2,7 +2,6 @@
 
 use crate::api::types::{
     flatten_tree,
-    ApiResult,
     FileEntryDto,
     SandboxUsageDto,
     VonException,
@@ -11,7 +10,7 @@ use crate::sandbox;
 use crate::state;
 
 /// The file tree, flattened in display order with a depth for indenting.
-pub fn file_tree(project_id: String) -> ApiResult<Vec<FileEntryDto>> {
+pub fn file_tree(project_id: String) -> Result<Vec<FileEntryDto>, VonException> {
     let sb = state::sandbox_for(&project_id).map_err(VonException::from)?;
     let tree = sb.tree().map_err(VonException::from)?;
     let mut out = Vec::new();
@@ -20,7 +19,7 @@ pub fn file_tree(project_id: String) -> ApiResult<Vec<FileEntryDto>> {
 }
 
 /// Reads a text file for the editor pane.
-pub fn read_project_file(project_id: String, path: String) -> ApiResult<String> {
+pub fn read_project_file(project_id: String, path: String) -> Result<String, VonException> {
     let sb = state::sandbox_for(&project_id).map_err(VonException::from)?;
     sb.read_file(&path).map_err(VonException::from)
 }
@@ -31,7 +30,7 @@ pub fn write_project_file(
     project_id: String,
     path: String,
     content: String,
-) -> ApiResult<i64> {
+) -> Result<i64, VonException> {
     let sb = state::sandbox_for(&project_id).map_err(VonException::from)?;
     let bytes = sb.write_file(&path, &content).map_err(VonException::from)?;
     let usage = sb.usage().map_err(VonException::from)?;
@@ -39,12 +38,12 @@ pub fn write_project_file(
     Ok(bytes as i64)
 }
 
-pub fn delete_project_file(project_id: String, path: String) -> ApiResult<()> {
+pub fn delete_project_file(project_id: String, path: String) -> Result<(), VonException> {
     let sb = state::sandbox_for(&project_id).map_err(VonException::from)?;
     sb.delete(&path).map_err(VonException::from)
 }
 
-pub fn sandbox_usage(project_id: String) -> ApiResult<SandboxUsageDto> {
+pub fn sandbox_usage(project_id: String) -> Result<SandboxUsageDto, VonException> {
     let sb = state::sandbox_for(&project_id).map_err(VonException::from)?;
     let usage = sb.usage().map_err(VonException::from)?;
     Ok(SandboxUsageDto {
@@ -57,7 +56,7 @@ pub fn sandbox_usage(project_id: String) -> ApiResult<SandboxUsageDto> {
 
 /// Zips the sandbox for the "Download Project" button and returns the archive's
 /// path, which Dart hands to the platform share sheet.
-pub fn export_project(project_id: String) -> ApiResult<String> {
+pub fn export_project(project_id: String) -> Result<String, VonException> {
     let sb = state::sandbox_for(&project_id).map_err(VonException::from)?;
     let project = crate::db::get_project(&project_id).map_err(VonException::from)?;
 
@@ -92,7 +91,7 @@ pub fn export_project(project_id: String) -> ApiResult<String> {
 
 /// Removes previously exported archives — they are duplicates of data the app
 /// already holds and add up quickly.
-pub fn clear_exports() -> ApiResult<i32> {
+pub fn clear_exports() -> Result<i32, VonException> {
     let dir = &state::paths().map_err(VonException::from)?.exports;
     let mut removed = 0;
     if let Ok(entries) = std::fs::read_dir(dir) {

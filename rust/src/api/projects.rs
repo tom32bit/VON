@@ -5,7 +5,7 @@
 //! would churn the schema for a branding decision, and every provider API this
 //! talks to speaks in neutral terms anyway.
 
-use crate::api::types::{ApiResult, MessageDto, ProjectDto, VonException};
+use crate::api::types::{MessageDto, ProjectDto, VonException};
 use crate::error::VonError;
 use crate::{db, llm, server, state};
 
@@ -16,7 +16,7 @@ pub fn create_project(
     kind: String,
     provider: String,
     model_id: String,
-) -> ApiResult<ProjectDto> {
+) -> Result<ProjectDto, VonException> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err(VonError::InvalidArgument("a VON needs a name".into()).into());
@@ -56,7 +56,7 @@ pub fn create_project(
     Ok(ProjectDto::from_row(row, 0))
 }
 
-pub fn list_projects() -> ApiResult<Vec<ProjectDto>> {
+pub fn list_projects() -> Result<Vec<ProjectDto>, VonException> {
     let rows = db::list_projects().map_err(VonException::from)?;
     Ok(rows
         .into_iter()
@@ -72,7 +72,7 @@ pub fn list_projects() -> ApiResult<Vec<ProjectDto>> {
         .collect())
 }
 
-pub fn get_project(project_id: String) -> ApiResult<ProjectDto> {
+pub fn get_project(project_id: String) -> Result<ProjectDto, VonException> {
     let row = db::get_project(&project_id).map_err(VonException::from)?;
     let count = state::sandbox_for(&project_id)
         .and_then(|sb| sb.usage())
@@ -81,7 +81,7 @@ pub fn get_project(project_id: String) -> ApiResult<ProjectDto> {
     Ok(ProjectDto::from_row(row, count))
 }
 
-pub fn rename_project(project_id: String, name: String) -> ApiResult<()> {
+pub fn rename_project(project_id: String, name: String) -> Result<(), VonException> {
     let name = name.trim();
     if name.is_empty() {
         return Err(VonError::InvalidArgument("a VON needs a name".into()).into());
@@ -98,13 +98,13 @@ pub fn set_project_model(
     project_id: String,
     provider: String,
     model_id: String,
-) -> ApiResult<()> {
+) -> Result<(), VonException> {
     llm::Provider::parse(&provider).map_err(VonException::from)?;
     db::update_project_model(&project_id, &provider, &model_id).map_err(VonException::from)
 }
 
 /// Deletes the project, its conversation, and its entire sandbox.
-pub fn delete_project(project_id: String) -> ApiResult<()> {
+pub fn delete_project(project_id: String) -> Result<(), VonException> {
     // Confirm it exists before deleting anything on disk.
     db::get_project(&project_id).map_err(VonException::from)?;
 
@@ -120,12 +120,12 @@ pub fn delete_project(project_id: String) -> ApiResult<()> {
     db::delete_project(&project_id).map_err(VonException::from)
 }
 
-pub fn list_messages(project_id: String) -> ApiResult<Vec<MessageDto>> {
+pub fn list_messages(project_id: String) -> Result<Vec<MessageDto>, VonException> {
     let rows = db::list_messages(&project_id).map_err(VonException::from)?;
     Ok(rows.into_iter().map(MessageDto::from).collect())
 }
 
 /// Clears the conversation while keeping the files the agent already produced.
-pub fn clear_conversation(project_id: String) -> ApiResult<()> {
+pub fn clear_conversation(project_id: String) -> Result<(), VonException> {
     db::clear_messages(&project_id).map_err(VonException::from)
 }

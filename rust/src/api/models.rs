@@ -3,7 +3,6 @@
 use flutter_rust_bridge::frb;
 
 use crate::api::types::{
-    ApiResult,
     CloudModelDto,
     DeviceProfileDto,
     DownloadProgressDto,
@@ -17,7 +16,7 @@ use crate::{db, governor, state};
 
 /// Offline models with their download state and a red/yellow/green verdict for
 /// this specific device.
-pub fn list_offline_models() -> ApiResult<Vec<OfflineModelDto>> {
+pub fn list_offline_models() -> Result<Vec<OfflineModelDto>, VonException> {
     let rows = db::list_local_models().map_err(VonException::from)?;
     let default_id = db::get_setting("local_model_id")
         .map_err(VonException::from)?
@@ -76,7 +75,7 @@ fn current_profile() -> governor::DeviceProfile {
     }
 }
 
-pub fn list_cloud_models() -> ApiResult<Vec<CloudModelDto>> {
+pub fn list_cloud_models() -> Result<Vec<CloudModelDto>, VonException> {
     let configured = db::providers_with_keys().map_err(VonException::from)?;
     Ok(catalog::cloud_catalog()
         .into_iter()
@@ -100,7 +99,7 @@ pub fn list_cloud_models() -> ApiResult<Vec<CloudModelDto>> {
 pub fn download_model(
     sink: StreamSink<DownloadProgressDto>,
     model_id: String,
-) -> ApiResult<()> {
+) -> Result<(), VonException> {
     let result = state::block_on(async {
         catalog::download_model(&model_id, |progress| {
             // A closed sink means the user left the screen; the download still
@@ -128,12 +127,12 @@ pub fn download_model(
 }
 
 /// Deletes downloaded weights to reclaim storage.
-pub fn delete_downloaded_model(model_id: String) -> ApiResult<()> {
+pub fn delete_downloaded_model(model_id: String) -> Result<(), VonException> {
     catalog::delete_model(&model_id).map_err(VonException::from)
 }
 
 /// Sets the model used by local projects.
-pub fn set_default_local_model(model_id: String) -> ApiResult<()> {
+pub fn set_default_local_model(model_id: String) -> Result<(), VonException> {
     let row = db::get_local_model(&model_id)
         .map_err(VonException::from)?
         .ok_or_else(|| VonException::from(VonError::NotFound(format!("model '{model_id}'"))))?;
@@ -157,13 +156,13 @@ pub fn set_default_local_model(model_id: String) -> ApiResult<()> {
 /// Keys live in the app's private SQLite database, which Android keeps outside
 /// other apps' reach. They are never written to logs and never leave the device
 /// except to the provider they belong to.
-pub fn set_api_key(provider: String, key: String) -> ApiResult<()> {
+pub fn set_api_key(provider: String, key: String) -> Result<(), VonException> {
     Provider::parse(&provider).map_err(VonException::from)?;
     db::set_api_key(&provider, key.trim()).map_err(VonException::from)
 }
 
 /// Whether a key is stored — the key itself is never returned to Dart.
-pub fn has_api_key(provider: String) -> ApiResult<bool> {
+pub fn has_api_key(provider: String) -> Result<bool, VonException> {
     Ok(db::get_api_key(&provider)
         .map_err(VonException::from)?
         .map(|k| !k.trim().is_empty())
@@ -171,7 +170,7 @@ pub fn has_api_key(provider: String) -> ApiResult<bool> {
 }
 
 /// Masked form for display, e.g. `sk-ant…4f2a`.
-pub fn api_key_hint(provider: String) -> ApiResult<Option<String>> {
+pub fn api_key_hint(provider: String) -> Result<Option<String>, VonException> {
     Ok(db::get_api_key(&provider)
         .map_err(VonException::from)?
         .filter(|k| k.len() > 12)
@@ -179,7 +178,7 @@ pub fn api_key_hint(provider: String) -> ApiResult<Option<String>> {
 }
 
 /// "Test connection" button: makes one tiny real request.
-pub fn test_api_key(provider: String, key: String, model_id: String) -> ApiResult<()> {
+pub fn test_api_key(provider: String, key: String, model_id: String) -> Result<(), VonException> {
     let provider = Provider::parse(&provider).map_err(VonException::from)?;
     let key = key.trim();
     if key.is_empty() {

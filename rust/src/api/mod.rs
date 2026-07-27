@@ -5,7 +5,8 @@
 //! nothing below `api` is reachable from Dart.
 //!
 //! Conventions:
-//! * Fallible calls return [`ApiResult`], whose error carries a stable `kind`.
+//! * Fallible calls return `Result<T, VonException>`, whose error carries a
+//!   stable `kind`. Spelled out rather than aliased — see api/types.rs.
 //! * Long-running work streams progress through a `StreamSink` rather than
 //!   blocking a Dart `await`.
 //! * Nothing here blocks the Flutter UI thread: `flutter_rust_bridge` dispatches
@@ -20,4 +21,4 @@ pub mod preview;
 pub mod projects;
 pub mod types;
 
-pub use types::{ApiResult, VonException};
+pub use types::VonException;

@@ -2,18 +2,18 @@
 
 use flutter_rust_bridge::frb;
 
-use crate::api::types::{ApiResult, VonException};
+use crate::api::types::VonException;
 use crate::{server, state};
 
 /// Starts (or returns the existing) preview server and gives Dart the URL to
 /// point its `WebView` at.
-pub fn start_preview(project_id: String) -> ApiResult<String> {
+pub fn start_preview(project_id: String) -> Result<String, VonException> {
     let sandbox = state::sandbox_for(&project_id).map_err(VonException::from)?;
     server::start(&project_id, sandbox).map_err(VonException::from)
 }
 
 /// Stops the server and frees its port. Called when the workspace closes.
-pub fn stop_preview(project_id: String) -> ApiResult<()> {
+pub fn stop_preview(project_id: String) -> Result<(), VonException> {
     server::stop(&project_id);
     Ok(())
 }
@@ -25,7 +25,7 @@ pub fn preview_url(project_id: String) -> Option<String> {
 }
 
 /// Shuts every preview down — used when the app is backgrounded.
-pub fn stop_all_previews() -> ApiResult<()> {
+pub fn stop_all_previews() -> Result<(), VonException> {
     server::stop_all();
     Ok(())
 }

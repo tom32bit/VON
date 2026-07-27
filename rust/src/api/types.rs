@@ -43,7 +43,11 @@ impl std::fmt::Display for VonException {
 
 impl std::error::Error for VonException {}
 
-pub type ApiResult<T> = std::result::Result<T, VonException>;
+// NOTE: there is deliberately no `ApiResult<T>` alias here. frb 2.x does not
+// resolve a generic type alias in a return position — it treated
+// `ApiResult<Vec<ProjectDto>>` as one opaque type, generated a bogus
+// `ApiResultVecProjectDto` on the Dart side, and never emitted the DTO
+// classes at all. Every api fn spells out `Result<T, VonException>`.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectDto {

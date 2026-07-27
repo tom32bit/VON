@@ -3,7 +3,7 @@
 use crate::frb_generated::StreamSink;
 
 use crate::agent::{self, AgentEvent, RunOptions};
-use crate::api::types::{ApiResult, VonException};
+use crate::api::types::VonException;
 use crate::error::ErrorInfo;
 
 /// Mirror of [`AgentEvent`] flattened for the bridge.
@@ -158,7 +158,7 @@ pub fn run_agent(
     project_id: String,
     message: String,
     max_tokens: u32,
-) -> ApiResult<()> {
+) -> Result<(), VonException> {
     let message = message.trim().to_string();
     if message.is_empty() {
         return Err(crate::error::VonError::InvalidArgument("write a message first".into()).into());
@@ -189,7 +189,7 @@ pub fn run_agent(
 
 /// Stops the run in progress. The loop finishes the current tool call, records
 /// results for anything already started, and exits cleanly.
-pub fn cancel_agent(project_id: String) -> ApiResult<()> {
+pub fn cancel_agent(project_id: String) -> Result<(), VonException> {
     agent::cancel(&project_id);
     Ok(())
 }

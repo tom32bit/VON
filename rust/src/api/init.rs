@@ -2,7 +2,7 @@
 
 use flutter_rust_bridge::frb;
 
-use crate::api::types::{ApiResult, VonException};
+use crate::api::types::VonException;
 use crate::{db, llm, server, state};
 
 /// Boots the core. Called once from Dart with the app's private directory
@@ -11,7 +11,7 @@ use crate::{db, llm, server, state};
 /// Idempotent: Flutter recreates its engine on some Android lifecycle
 /// transitions while the Rust process keeps running, so this must tolerate
 /// being called again.
-pub fn init_app(app_dir: String) -> ApiResult<()> {
+pub fn init_app(app_dir: String) -> Result<(), VonException> {
     install_logging();
 
     state::init(std::path::Path::new(&app_dir)).map_err(VonException::from)?;
@@ -80,16 +80,16 @@ pub fn build_features() -> Vec<String> {
 ///
 /// Releases the two things that make the process an attractive target for the
 /// low-memory killer: the resident model weights and any preview servers.
-pub fn on_app_paused() -> ApiResult<()> {
+pub fn on_app_paused() -> Result<(), VonException> {
     llm::local::release_model();
     server::stop_all();
     Ok(())
 }
 
-pub fn set_setting(key: String, value: String) -> ApiResult<()> {
+pub fn set_setting(key: String, value: String) -> Result<(), VonException> {
     db::set_setting(&key, &value).map_err(VonException::from)
 }
 
-pub fn get_setting(key: String) -> ApiResult<Option<String>> {
+pub fn get_setting(key: String) -> Result<Option<String>, VonException> {
     db::get_setting(&key).map_err(VonException::from)
 }
