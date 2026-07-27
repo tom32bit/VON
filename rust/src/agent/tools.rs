@@ -39,7 +39,11 @@ pub fn specs(project_kind: &str) -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file from the project sandbox.".into(),
+            description:
+                "Read a file from the project sandbox as text. Source and Markdown come back \
+                 as-is; PDF and Word (.docx) documents the user imported are converted to text \
+                 automatically, so read them exactly the same way."
+                    .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -345,10 +349,24 @@ fn write_file(sandbox: &Sandbox, args: &Value) -> Result<String> {
     ))
 }
 
+/// Reads a file as text, converting documents on the way through.
+///
+/// The agent has exactly one way to look at a file and it returns UTF-8, so an
+/// imported PDF or Word document would otherwise be unreadable — which would
+/// defeat the point of importing one. Conversion happens here rather than at
+/// import so the original stays on disk: still exportable, still pushable to
+/// GitHub, still the file the user recognises in the Files tab.
 fn read_file(sandbox: &Sandbox, args: &Value) -> Result<String> {
     let path = require_string(args, "path")?;
-    let content = sandbox.read_file(&path)?;
-    Ok(format!("--- {path} ---\n{content}"))
+    if !crate::documents::needs_extraction(&path) {
+        let content = sandbox.read_file(&path)?;
+        return Ok(format!("--- {path} ---\n{content}"));
+    }
+    let bytes = sandbox.read_bytes(&path)?;
+    let text = crate::documents::extract(&path, &bytes)?;
+    Ok(format!(
+        "--- {path} (text extracted from the original document) ---\n{text}"
+    ))
 }
 
 fn list_files(sandbox: &Sandbox) -> Result<String> {

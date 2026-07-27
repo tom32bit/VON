@@ -80,7 +80,8 @@ The version drift predicted here did materialise, and is fixed:
 │  executor.rs  Wasmtime (WASI) + embedded RustPython                  │
 │  governor.rs  thermal + RAM throttling, device tiering               │
 │  server.rs    tiny_http preview on 127.0.0.1                         │
-│  github.rs    publish a sandbox as a commit via the Git Data API     │
+│  github.rs    three-way sync with a GitHub branch                    │
+│  documents.rs PDF and DOCX to text, so the agent can read imports     │
 │  db.rs        SQLite: projects, transcripts, memory, keys            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -312,6 +313,8 @@ first.
   repository is one request per file. A tarball fetch would be one request
   total, but needs a second code path and `tar` support that isn't in the
   dependency set.
+- **No OCR.** A scanned PDF has no text layer, and VON says so rather than
+  returning an empty document.
 - **A truncated tree listing refuses rather than guesses.** GitHub truncates the
   recursive listing for very large repositories, and a truncated answer reads as
   "those files do not exist" — which the merge would act on as deletions.
@@ -328,7 +331,7 @@ von/
 │   ├── agent/        runner (the loop), tools, prompt
 │   ├── llm/          mod (transcript + Engine), cloud, local, catalog
 │   ├── sandbox.rs  db.rs  governor.rs  server.rs  executor.rs  state.rs
-│   ├── github.rs
+│   ├── github.rs  documents.rs
 │   └── error.rs
 ├── lib/
 │   ├── core/         theme, providers

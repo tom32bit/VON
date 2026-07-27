@@ -46,6 +46,11 @@ pub fn system_prompt(ctx: &PromptContext<'_>) -> String {
          Use paths relative to the VON's root: `main.py`, `src/util.py`. Absolute paths and \
          `..` are rejected.\n\
          \n\
+         Anything the user imported from their phone is in `uploads/`. PDFs and Word documents \
+         there are converted to text when you read them, so `read_file` works on them like any \
+         other file. If the request refers to a document, call `list_files` and read it before \
+         assuming what it contains.\n\
+         \n\
          When a tool fails, read the error — it usually tells you exactly what to change. Try a \
          different approach rather than the same call twice.\n\
          \n\

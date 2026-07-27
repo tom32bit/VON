@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -237,6 +238,23 @@ class CoreApi {
       rust_files.sandboxUsage(projectId: projectId);
 
   /// Zips the sandbox and returns the archive path for the share sheet.
+  /// Copies a picked file into the VON's `uploads/` folder and returns the
+  /// sandbox path it landed at.
+  Future<String> importFile({
+    required String projectId,
+    required String fileName,
+    required Uint8List bytes,
+  }) =>
+      rust_files.importFile(
+        projectId: projectId,
+        fileName: fileName,
+        bytes: bytes,
+      );
+
+  /// Whether this path is converted rather than read directly, and so cannot
+  /// be edited in place.
+  Future<bool> isDocument(String path) => rust_files.isDocument(path: path);
+
   Future<String> exportProject(String projectId) =>
       rust_files.exportProject(projectId: projectId);
 

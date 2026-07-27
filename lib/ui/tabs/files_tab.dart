@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -26,7 +27,24 @@ class FilesTab extends ConsumerWidget {
 
     return Column(
       children: [
-        if (usage.valueOrNull case final quota?) _QuotaBar(usage: quota),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            VonSpace.gutter,
+            0,
+            VonSpace.gutter,
+            VonSpace.sm,
+          ),
+          child: Row(
+            children: [
+              if (usage.valueOrNull case final quota?)
+                Expanded(child: _QuotaBar(usage: quota))
+              else
+                const Spacer(),
+              const SizedBox(width: VonSpace.sm),
+              _ImportButton(projectId: projectId),
+            ],
+          ),
+        ),
         Expanded(
           child: switch (tree) {
             AsyncLoading() => const Center(child: NeuPulsingDots()),
@@ -44,8 +62,9 @@ class FilesTab extends ConsumerWidget {
               const NeuEmptyState(
                 icon: Icons.folder_open_outlined,
                 title: 'No files yet',
-                message: 'Files the agent creates appear here. Nothing outside '
-                    'this VON is reachable from it.',
+                message: 'Files the agent creates appear here, and so does '
+                    'anything you import. Nothing outside this VON is '
+                    'reachable from it.',
               ),
             AsyncData(value: final entries) => RefreshIndicator(
                 color: VonColors.accent,
@@ -86,6 +105,110 @@ class FilesTab extends ConsumerWidget {
   }
 }
 
+/// Copies a document off the phone into the VON so the agent can read it.
+///
+/// Goes through the system picker rather than asking for storage permission:
+/// the user grants one file at a time and VON never gains the ability to read
+/// anything they did not choose. Nothing is streamed anywhere — the bytes go
+/// straight into this project's sandbox.
+class _ImportButton extends ConsumerStatefulWidget {
+  const _ImportButton({required this.projectId});
+
+  final String projectId;
+
+  @override
+  ConsumerState<_ImportButton> createState() => _ImportButtonState();
+}
+
+class _ImportButtonState extends ConsumerState<_ImportButton> {
+  bool _busy = false;
+
+  Future<void> _pick() async {
+    setState(() => _busy = true);
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        // Bytes rather than a path: on Android a picked file often lives behind
+        // a content:// URI with no filesystem path at all.
+        withData: true,
+      );
+      if (picked == null) return;
+
+      final api = ref.read(coreApiProvider);
+      final landed = <String>[];
+      final failed = <String>[];
+
+      for (final file in picked.files) {
+        final bytes = file.bytes;
+        if (bytes == null) {
+          failed.add('${file.name}: could not be read');
+          continue;
+        }
+        try {
+          landed.add(await api.importFile(
+            projectId: widget.projectId,
+            fileName: file.name,
+            bytes: bytes,
+          ));
+        } catch (e) {
+          failed.add('${file.name}: ${describeError(e)}');
+        }
+      }
+
+      ref
+        ..invalidate(fileTreeProvider(widget.projectId))
+        ..invalidate(sandboxUsageProvider(widget.projectId));
+
+      if (!mounted) return;
+      final message = switch ((landed.length, failed.length)) {
+        (0, 0) => 'Nothing imported.',
+        (_, 0) when landed.length == 1 => 'Imported to ${landed.first}.',
+        (_, 0) => 'Imported ${landed.length} files to uploads/.',
+        // Naming the failure is the point: a file silently missing from the
+        // list is worse than an ugly message.
+        _ => 'Imported ${landed.length}; ${failed.join('; ')}',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: VonColors.bgElevated,
+          content: Text(message, style: VonText.body),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: VonColors.bgElevated,
+          content: Text('Import failed: ${describeError(e)}',
+              style: VonText.body),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_busy) {
+      return const NeuSurface(
+        depth: NeuDepth.concave,
+        radius: VonRadius.small,
+        width: 40,
+        height: 40,
+        child: Center(child: NeuPulsingDots(size: 4)),
+      );
+    }
+    return NeuIconButton(
+      icon: Icons.upload_file_outlined,
+      size: 40,
+      iconSize: 18,
+      tooltip: 'Import a document for the agent to read',
+      onPressed: _pick,
+    );
+  }
+}
+
 class _QuotaBar extends StatelessWidget {
   const _QuotaBar({required this.usage});
 
@@ -103,17 +226,10 @@ class _QuotaBar extends StatelessWidget {
             ? VonColors.warn
             : VonColors.accent;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        VonSpace.gutter,
-        0,
-        VonSpace.gutter,
-        VonSpace.sm,
-      ),
-      child: NeuSurface(
-        depth: NeuDepth.concave,
-        radius: VonRadius.small,
-        padding: const EdgeInsets.all(VonSpace.sm),
+    return NeuSurface(
+      depth: NeuDepth.concave,
+      radius: VonRadius.small,
+      padding: const EdgeInsets.all(VonSpace.sm),
         child: Column(
           children: [
             Row(

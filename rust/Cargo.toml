@@ -10,10 +10,11 @@ license = "MIT"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [features]
-default = ["ffi", "local-llm", "wasm-exec", "python-exec"]
+default = ["ffi", "local-llm", "wasm-exec", "python-exec", "pdf"]
 # The Dart bridge. Requires `frb_generated.rs`, so it is off for plain
 # `cargo test` runs that have not run codegen. See src/lib.rs.
 ffi = []
+pdf = ["dep:pdf-extract"]
 # Local GGUF inference through llama.cpp. Requires the NDK when cross-compiling.
 local-llm = ["dep:llama-cpp-2", "dep:encoding_rs"]
 # Wasmtime-backed execution of agent-authored .wasm modules.
@@ -55,6 +56,10 @@ base64 = "0.22"
 # Git blob object ids, computed locally so a push can tell which files GitHub
 # already has and skip uploading them. Not a security use.
 sha1 = "0.10"
+# PDF text extraction, behind a feature so a build that cannot carry it still
+# reads Markdown and DOCX. DOCX needs no dependency at all — it is a zip, and
+# `zip` is already here for project export.
+pdf-extract = { version = "0.7", optional = true }
 
 llama-cpp-2 = { version = "0.1.152", optional = true }
 # Streaming UTF-8 decode for token pieces; `token_to_piece` takes the

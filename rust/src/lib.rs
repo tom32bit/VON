@@ -16,6 +16,7 @@
 #[cfg(feature = "ffi")]
 pub mod api;
 pub mod db;
+pub mod documents;
 pub mod error;
 pub mod executor;
 pub mod github;
