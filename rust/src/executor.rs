@@ -439,9 +439,11 @@ __af_result = (__af_out.getvalue(), __af_err.getvalue())
                     (out, err, code)
                 }
                 Err(e) => {
-                    let mut buf = Vec::new();
-                    vm.write_exception(&mut buf, &e).ok();
-                    let trace = String::from_utf8_lossy(&buf).to_string();
+                    // `write_exception` wants rustpython's own `py_io::Write`,
+                    // which String implements and Vec<u8> does not — the
+                    // traceback is already text, so there is nothing to decode.
+                    let mut trace = String::new();
+                    vm.write_exception(&mut trace, &e).ok();
                     let out = fetch_str(vm, &scope, "__af_out");
                     (out, trace, 1)
                 }

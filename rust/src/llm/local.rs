@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use crate::error::{Result, VonError};
 use crate::governor;
 use crate::llm::{
-    ChatMessage,
     Completion,
     Delta,
     Engine,
@@ -432,7 +431,7 @@ pub fn release_model() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{Provider, ToolResult};
+    use crate::llm::{ChatMessage, Provider, ToolResult};
 
     #[test]
     fn parses_a_well_formed_tool_call() {
