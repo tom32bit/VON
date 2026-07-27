@@ -385,6 +385,7 @@ mod tests {
                     id: format!("t{i}"),
                     name: "write_file".into(),
                     arguments: serde_json::json!({}),
+                    thought_signature: String::new(),
                 }],
             ));
             messages.push(ChatMessage::tool(vec![ToolResult {

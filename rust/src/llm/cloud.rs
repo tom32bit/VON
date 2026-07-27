@@ -350,7 +350,7 @@ impl Accumulator {
                         PartialCall {
                             id,
                             name,
-                            args_json: String::new(),
+                            ..Default::default()
                         },
                     );
                 }
@@ -931,6 +931,7 @@ mod tests {
                     id: "toolu_1".into(),
                     name: "write_file".into(),
                     arguments: json!({ "path": "a.py" }),
+                    thought_signature: String::new(),
                 }],
             ),
             ChatMessage::tool(vec![ToolResult {
@@ -1155,6 +1156,7 @@ mod tests {
                 id: "x".into(),
                 name: "write_file".into(),
                 args_json: "{\"path\": \"unter".into(),
+                ..Default::default()
             },
         );
         // The tool then reports a clean "missing argument" the agent can fix,
